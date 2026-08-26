@@ -10,32 +10,31 @@ const {
   GatewayIntentBits,
   REST,
   Routes,
-  SlashCommandBuilder,
-  PermissionsBitField
+  SlashCommandBuilder
 } = require("discord.js");
 
 const app = express();
+
 const PORT = process.env.PORT || 8080;
 const DATA_FILE = path.resolve(__dirname, "tiers.json");
 
 /* =========================================
-   CORS
+   MIDDLEWARE
 ========================================= */
 
-app.use((req, res, next) => {
-  res.header("Access-Control-Allow-Origin", "*");
-  res.header("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-  res.header(
-    "Access-Control-Allow-Headers",
-    "Origin, X-Requested-With, Content-Type, Accept"
-  );
+app.use(cors({
+  origin: "*",
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  allowedHeaders: [
+    "Origin",
+    "X-Requested-With",
+    "Content-Type",
+    "Accept",
+    "Authorization"
+  ]
+}));
 
-  if (req.method === "OPTIONS") {
-    return res.sendStatus(204);
-  }
-
-  next();
-});
+app.options("*", cors());
 
 app.use(express.json());
 
@@ -55,20 +54,6 @@ const TIERS = [
   "HT5",
   "LT5"
 ];
-
-/*
-   Points:
-   HT1 = 61
-   LT1 = 52
-   HT2 = 41
-   LT2 = 30
-   HT3 = 21
-   LT3 = 14
-   HT4 = 9
-   LT4 = 6
-   HT5 = 3
-   LT5 = 1
-*/
 
 const POINTS = {
   HT1: 61,
@@ -121,7 +106,7 @@ const KITS = [
   {
     id: "uhc",
     name: "❤️ UHC",
-    aliases: ["uhc", "uch"]
+    aliases: ["uhc"]
   },
   {
     id: "mace",
@@ -133,7 +118,6 @@ const KITS = [
     name: "🔱⚒️ Spear Mace",
     aliases: [
       "spear-mace",
-      "sprearmace",
       "spearmace",
       "spear"
     ]
@@ -149,22 +133,16 @@ const KITS = [
   }
 ];
 
-const KIT_IDS = new Set(
-  KITS.map(kit => kit.id)
-);
-
 const KIT_ALIASES = {};
 
 for (const kit of KITS) {
   for (const alias of kit.aliases) {
-    KIT_ALIASES[
-      alias.toLowerCase()
-    ] = kit.id;
+    KIT_ALIASES[alias.toLowerCase()] = kit.id;
   }
 }
 
 /* =========================================
-   DEFAULT DATA
+   DATA
 ========================================= */
 
 function createEmptyData() {
@@ -185,42 +163,33 @@ let tierData = createEmptyData();
 
 async function loadData() {
   try {
-    const raw =
-      await fs.readFile(
-        DATA_FILE,
-        "utf8"
-      );
+    const raw = await fs.readFile(
+      DATA_FILE,
+      "utf8"
+    );
 
-    const saved =
-      JSON.parse(raw);
-
-    const merged =
-      createEmptyData();
+    const saved = JSON.parse(raw);
+    const merged = createEmptyData();
 
     for (const kit of KITS) {
       if (
+        saved &&
         saved[kit.id] &&
         typeof saved[kit.id] === "object"
       ) {
-        merged[kit.id] =
-          saved[kit.id];
+        merged[kit.id] = saved[kit.id];
       }
     }
 
     tierData = merged;
 
-    console.log(
-      "✅ Tier data loaded from tiers.json"
-    );
-
+    console.log("✅ Tier data loaded.");
   } catch (error) {
-
     console.log(
-      "⚠️ No valid tiers.json found. Creating one."
+      "⚠️ tiers.json missing or invalid. Creating new data."
     );
 
-    tierData =
-      createEmptyData();
+    tierData = createEmptyData();
 
     await saveData();
   }
@@ -232,7 +201,6 @@ async function loadData() {
 
 async function saveData() {
   try {
-
     await fs.writeFile(
       DATA_FILE,
       JSON.stringify(
@@ -243,17 +211,12 @@ async function saveData() {
       "utf8"
     );
 
-    console.log(
-      "💾 Tier data saved."
-    );
-
+    console.log("💾 Tier data saved.");
   } catch (error) {
-
     console.error(
       "❌ Could not save tiers.json:",
       error
     );
-
   }
 }
 
@@ -262,20 +225,14 @@ async function saveData() {
 ========================================= */
 
 function normalizePlayer(name) {
-
-  if (
-    typeof name !== "string"
-  ) {
+  if (typeof name !== "string") {
     return null;
   }
 
-  const player =
-    name.trim();
+  const player = name.trim();
 
   if (
-    !/^[A-Za-z0-9_]{2,16}$/.test(
-      player
-    )
+    !/^[A-Za-z0-9_]{2,16}$/.test(player)
   ) {
     return null;
   }
@@ -284,20 +241,42 @@ function normalizePlayer(name) {
 }
 
 function normalizeKit(input) {
-
-  if (
-    typeof input !== "string"
-  ) {
+  if (typeof input !== "string") {
     return null;
   }
 
   return (
     KIT_ALIASES[
-      input
-        .trim()
-        .toLowerCase()
+      input.trim().toLowerCase()
     ] || null
   );
+}
+
+/* =========================================
+   API RESPONSE
+========================================= */
+
+function getTierResponse() {
+  return {
+    status: "online",
+    bot: "HAVOC STYX",
+    api: "tier-list",
+    version: "3.0",
+
+    kits: KITS.map(kit => ({
+      id: kit.id,
+      name: kit.name,
+      aliases: kit.aliases
+    })),
+
+    tiers: TIERS,
+
+    pointsByTier: POINTS,
+
+    data: tierData,
+
+    timestamp: new Date().toISOString()
+  };
 }
 
 /* =========================================
@@ -305,67 +284,99 @@ function normalizeKit(input) {
 ========================================= */
 
 app.get("/", (req, res) => {
-
   res.json({
     status: "online",
     bot: "HAVOC STYX",
     api: "tier-list",
     version: "3.0"
   });
-
 });
+
+/*
+   MAIN WEBSITE API
+*/
 
 app.get(
   "/api/tiers",
   (req, res) => {
-
-    res.setHeader(
-      "Cache-Control",
-      "no-store, no-cache, must-revalidate"
-    );
-
-    res.json({
-      kits: KITS.map(kit => ({
-        id: kit.id,
-        name: kit.name,
-        aliases: kit.aliases
-      })),
-
-      tiers: TIERS,
-
-      pointsByTier: POINTS,
-
-      data: tierData,
-
-      timestamp:
-        new Date().toISOString()
+    res.set({
+      "Cache-Control":
+        "no-store, no-cache, must-revalidate, proxy-revalidate",
+      "Pragma": "no-cache",
+      "Expires": "0",
+      "Access-Control-Allow-Origin": "*"
     });
 
+    res.status(200).json(
+      getTierResponse()
+    );
   }
 );
+
+/*
+   BACKUP ALIAS
+   Some versions of the website may use /api/tier
+*/
+
+app.get(
+  "/api/tier",
+  (req, res) => {
+    res.set({
+      "Cache-Control":
+        "no-store, no-cache, must-revalidate",
+      "Access-Control-Allow-Origin": "*"
+    });
+
+    res.status(200).json(
+      getTierResponse()
+    );
+  }
+);
+
+/*
+   PING
+*/
 
 app.get(
   "/api/ping",
   (req, res) => {
+    res.set(
+      "Access-Control-Allow-Origin",
+      "*"
+    );
 
-    res.json({
+    res.status(200).json({
       ok: true,
+      status: "online",
+      bot: "HAVOC STYX",
       timestamp: Date.now()
     });
+  }
+);
 
+/*
+   HEALTH CHECK
+*/
+
+app.get(
+  "/health",
+  (req, res) => {
+    res.status(200).json({
+      ok: true,
+      service: "HAVOC STYX API"
+    });
   }
 );
 
 /* =========================================
-   DISCORD
+   DISCORD CLIENT
 ========================================= */
 
-const client =
-  new Client({
-    intents: [
-      GatewayIntentBits.Guilds
-    ]
-  });
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds
+  ]
+});
 
 /* =========================================
    SLASH COMMAND
@@ -378,6 +389,7 @@ const tierCommand =
       "Manage HAVOC STYX tiers"
     )
 
+    /* ADD */
     .addSubcommand(
       sub =>
         sub
@@ -405,12 +417,10 @@ const tierCommand =
                 )
                 .setRequired(true)
                 .addChoices(
-                  ...TIERS.map(
-                    tier => ({
-                      name: tier,
-                      value: tier
-                    })
-                  )
+                  ...TIERS.map(tier => ({
+                    name: tier,
+                    value: tier
+                  }))
                 )
           )
 
@@ -423,16 +433,15 @@ const tierCommand =
                 )
                 .setRequired(true)
                 .addChoices(
-                  ...KITS.map(
-                    kit => ({
-                      name: kit.name,
-                      value: kit.id
-                    })
-                  )
+                  ...KITS.map(kit => ({
+                    name: kit.name,
+                    value: kit.id
+                  }))
                 )
           )
     )
 
+    /* REMOVE */
     .addSubcommand(
       sub =>
         sub
@@ -460,16 +469,15 @@ const tierCommand =
                 )
                 .setRequired(true)
                 .addChoices(
-                  ...KITS.map(
-                    kit => ({
-                      name: kit.name,
-                      value: kit.id
-                    })
-                  )
+                  ...KITS.map(kit => ({
+                    name: kit.name,
+                    value: kit.id
+                  }))
                 )
           )
     )
 
+    /* GET */
     .addSubcommand(
       sub =>
         sub
@@ -497,12 +505,10 @@ const tierCommand =
                 )
                 .setRequired(true)
                 .addChoices(
-                  ...KITS.map(
-                    kit => ({
-                      name: kit.name,
-                      value: kit.id
-                    })
-                  )
+                  ...KITS.map(kit => ({
+                    name: kit.name,
+                    value: kit.id
+                  }))
                 )
           )
     );
@@ -514,7 +520,6 @@ const tierCommand =
 client.once(
   "ready",
   async () => {
-
     console.log(
       `🤖 Logged in as ${client.user.tag}`
     );
@@ -527,11 +532,7 @@ client.once(
       );
 
     try {
-
-      if (
-        process.env.GUILD_ID
-      ) {
-
+      if (process.env.GUILD_ID) {
         await rest.put(
           Routes.applicationGuildCommands(
             client.user.id,
@@ -547,9 +548,7 @@ client.once(
         console.log(
           "✅ Guild slash command registered."
         );
-
       } else {
-
         await rest.put(
           Routes.applicationCommands(
             client.user.id
@@ -564,18 +563,13 @@ client.once(
         console.log(
           "✅ Global slash command registered."
         );
-
       }
-
     } catch (error) {
-
       console.error(
         "❌ Command registration failed:",
         error
       );
-
     }
-
   }
 );
 
@@ -586,7 +580,6 @@ client.once(
 client.on(
   "interactionCreate",
   async interaction => {
-
     if (
       !interaction.isChatInputCommand()
     ) {
@@ -606,10 +599,7 @@ client.on(
        ADD
     ===================================== */
 
-    if (
-      subcommand === "add"
-    ) {
-
+    if (subcommand === "add") {
       const rawPlayer =
         interaction.options.getString(
           "player",
@@ -639,7 +629,6 @@ client.on(
         );
 
       if (!player) {
-
         await interaction.reply({
           content:
             "❌ Invalid Minecraft player name.",
@@ -650,7 +639,6 @@ client.on(
       }
 
       if (!kit) {
-
         await interaction.reply({
           content:
             "❌ Invalid kit.",
@@ -660,10 +648,7 @@ client.on(
         return;
       }
 
-      if (
-        !TIERS.includes(tier)
-      ) {
-
+      if (!TIERS.includes(tier)) {
         await interaction.reply({
           content:
             "❌ Invalid tier.",
@@ -686,19 +671,16 @@ client.on(
           k => k.id === kit
         );
 
-      const points =
-        POINTS[tier];
-
       await interaction.reply({
         content:
           `✅ **${player}** added!\n\n` +
           `🎮 Kit: **${kitInfo.name}**\n` +
           `🏆 Tier: **${tier}**\n` +
-          `⭐ Points: **${points}**`
+          `⭐ Points: **${POINTS[tier]}**`
       });
 
       console.log(
-        `[TIER ADD] ${player} → ${kit} → ${tier} (${points} pts)`
+        `[TIER ADD] ${player} → ${kit} → ${tier}`
       );
 
       return;
@@ -708,10 +690,7 @@ client.on(
        REMOVE
     ===================================== */
 
-    if (
-      subcommand === "remove"
-    ) {
-
+    if (subcommand === "remove") {
       const player =
         normalizePlayer(
           interaction.options.getString(
@@ -729,7 +708,6 @@ client.on(
         );
 
       if (!player || !kit) {
-
         await interaction.reply({
           content:
             "❌ Invalid player or kit.",
@@ -742,7 +720,6 @@ client.on(
       if (
         !tierData[kit]?.[player]
       ) {
-
         await interaction.reply({
           content:
             `❌ **${player}** is not ranked in that kit.`,
@@ -768,10 +745,7 @@ client.on(
        GET
     ===================================== */
 
-    if (
-      subcommand === "get"
-    ) {
-
+    if (subcommand === "get") {
       const player =
         normalizePlayer(
           interaction.options.getString(
@@ -789,7 +763,6 @@ client.on(
         );
 
       if (!player || !kit) {
-
         await interaction.reply({
           content:
             "❌ Invalid player or kit.",
@@ -803,7 +776,6 @@ client.on(
         tierData[kit]?.[player];
 
       if (!tier) {
-
         await interaction.reply({
           content:
             `❌ **${player}** is not ranked in that kit.`,
@@ -819,36 +791,36 @@ client.on(
           `🏆 Tier: **${tier}**\n` +
           `⭐ Points: **${POINTS[tier]}**`
       });
-
     }
-
   }
 );
 
 /* =========================================
-   START
+   START SERVER
 ========================================= */
 
 async function start() {
-
   await loadData();
 
   app.listen(
     PORT,
     "0.0.0.0",
     () => {
-
       console.log(
         `🌐 HAVOC STYX API running on port ${PORT}`
       );
 
+      console.log(
+        `🔗 API: /api/tiers`
+      );
+
+      console.log(
+        `🏓 Ping: /api/ping`
+      );
     }
   );
 
-  if (
-    !process.env.DISCORD_TOKEN
-  ) {
-
+  if (!process.env.DISCORD_TOKEN) {
     console.error(
       "❌ DISCORD_TOKEN is missing."
     );
@@ -857,18 +829,14 @@ async function start() {
   }
 
   try {
-
     await client.login(
       process.env.DISCORD_TOKEN
     );
-
   } catch (error) {
-
     console.error(
       "❌ Discord login failed:",
       error
     );
-
   }
 }
 
