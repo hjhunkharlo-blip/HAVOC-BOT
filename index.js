@@ -1,368 +1,341 @@
-const {
-  Client,
-  GatewayIntentBits,
-  REST,
-  Routes,
-  SlashCommandBuilder
-} = require("discord.js");
-
+const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder } = require("discord.js");
+const express = require("express");
 const fs = require("fs");
 
-// ==============================
-// HAVOC STYX CONFIG
-// ==============================
-
 const TOKEN = process.env.DISCORD_TOKEN;
-
-// Your Discord User ID
-const OWNER_ID = "1347412485426380930";
-
-// Your Discord Bot/Application ID
-const CLIENT_ID = "1542048358309429258";
-
-// Tier data file
-const TIERS_FILE = "./tiers.json";
-
-// ==============================
-// TIER DATA
-// ==============================
-
-function loadTiers() {
-  try {
-    if (!fs.existsSync(TIERS_FILE)) {
-      fs.writeFileSync(TIERS_FILE, "{}");
-      return {};
-    }
-
-    return JSON.parse(fs.readFileSync(TIERS_FILE, "utf8"));
-  } catch (error) {
-    console.error("❌ Error loading tiers:", error);
-    return {};
-  }
-}
-
-function saveTiers(tiers) {
-  fs.writeFileSync(
-    TIERS_FILE,
-    JSON.stringify(tiers, null, 2)
-  );
-}
-
-let tiers = loadTiers();
-
-// ==============================
-// DISCORD CLIENT
-// ==============================
+const CLIENT_ID = process.env.CLIENT_ID;
+const GUILD_ID = process.env.GUILD_ID;
+const PORT = process.env.PORT || 3000;
 
 if (!TOKEN) {
   console.error("❌ DISCORD_TOKEN is missing!");
   process.exit(1);
 }
 
+if (!CLIENT_ID) {
+  console.error("❌ CLIENT_ID is missing!");
+  process.exit(1);
+}
+
+if (!GUILD_ID) {
+  console.error("❌ GUILD_ID is missing!");
+  process.exit(1);
+}
+
+const KITS = [
+  "sword",
+  "axe",
+  "crystal",
+  "pot",
+  "smp",
+  "dia-smp",
+  "uhc",
+  "mace",
+  "spear-mace"
+];
+
+const TIERS = [
+  "HT1", "LT1",
+  "HT2", "LT2",
+  "HT3", "LT3",
+  "HT4", "LT4",
+  "HT5", "LT5"
+];
+
+const KIT_LABELS = {
+  sword: "⚔️ Sword",
+  axe: "🪓 Axe",
+  crystal: "💎 Crystal",
+  pot: "🧪 Pot",
+  smp: "🥊 SMP",
+  "dia-smp": "💠 Dia SMP",
+  uhc: "❤️ UHC",
+  mace: "🔨 Mace",
+  "spear-mace": "🔱⚒️ Spear Mace"
+};
+
+const DATA_FILE = "./tiers.json";
+
+function defaultData() {
+  const data = {};
+
+  for (const kit of KITS) {
+    data[kit] = {};
+  }
+
+  return data;
+}
+
+function loadData() {
+  try {
+    if (!fs.existsSync(DATA_FILE)) {
+      const data = defaultData();
+      fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
+      return data;
+    }
+
+    const data = JSON.parse(
+      fs.readFileSync(DATA_FILE, "utf8")
+    );
+
+    for (const kit of KITS) {
+      if (!data[kit]) data[kit] = {};
+    }
+
+    return data;
+  } catch (error) {
+    console.error("Could not read tiers.json:", error);
+    return defaultData();
+  }
+}
+
+function saveData(data) {
+  fs.writeFileSync(
+    DATA_FILE,
+    JSON.stringify(data, null, 2)
+  );
+}
+
+const data = loadData();
+
 const client = new Client({
   intents: [GatewayIntentBits.Guilds]
 });
 
-// ==============================
-// SLASH COMMANDS
-// ==============================
-
-const tierCommand = new SlashCommandBuilder()
-  .setName("tier")
-  .setDescription("Manage the HAVOC STYX tier list.")
-
-  .addSubcommand(subcommand =>
-    subcommand
-      .setName("add")
-      .setDescription("Add a player to the tier list.")
-      .addStringOption(option =>
-        option
-          .setName("player")
-          .setDescription("Player name")
-          .setRequired(true)
-      )
-      .addStringOption(option =>
-        option
-          .setName("tier")
-          .setDescription("Tier, for example HT1 or LT2")
-          .setRequired(true)
-          .addChoices(
-            { name: "HT1", value: "HT1" },
-            { name: "LT1", value: "LT1" },
-            { name: "HT2", value: "HT2" },
-            { name: "LT2", value: "LT2" },
-            { name: "HT3", value: "HT3" },
-            { name: "LT3", value: "LT3" },
-            { name: "HT4", value: "HT4" },
-            { name: "LT4", value: "LT4" },
-            { name: "HT5", value: "HT5" },
-            { name: "LT5", value: "LT5" }
-          )
-      )
-  )
-
-  .addSubcommand(subcommand =>
-    subcommand
-      .setName("remove")
-      .setDescription("Remove a player from the tier list.")
-      .addStringOption(option =>
-        option
-          .setName("player")
-          .setDescription("Player name")
-          .setRequired(true)
-      )
-  )
-
-  .addSubcommand(subcommand =>
-    subcommand
-      .setName("list")
-      .setDescription("Show the HAVOC STYX tier list.")
-  )
-
-  .addSubcommand(subcommand =>
-    subcommand
-      .setName("player")
-      .setDescription("Check a player's tier.")
-      .addStringOption(option =>
-        option
-          .setName("player")
-          .setDescription("Player name")
-          .setRequired(true)
-      )
-  );
-
 const commands = [
   new SlashCommandBuilder()
-    .setName("ping")
-    .setDescription("Check if the bot is online."),
+    .setName("tier")
+    .setDescription("Manage the HAVOC STYX FFA tier list")
 
-  new SlashCommandBuilder()
-    .setName("server")
-    .setDescription("Show HAVOC STYX server information."),
+    .addSubcommand(sub =>
+      sub
+        .setName("add")
+        .setDescription("Add or update a player")
+        .addStringOption(option =>
+          option
+            .setName("player")
+            .setDescription("Player name")
+            .setRequired(true)
+        )
+        .addStringOption(option =>
+          option
+            .setName("kit")
+            .setDescription("FFA kit")
+            .setRequired(true)
+            .addChoices(
+              ...KITS.map(kit => ({
+                name: KIT_LABELS[kit],
+                value: kit
+              }))
+            )
+        )
+        .addStringOption(option =>
+          option
+            .setName("tier")
+            .setDescription("Tier")
+            .setRequired(true)
+            .addChoices(
+              ...TIERS.map(tier => ({
+                name: tier,
+                value: tier
+              }))
+            )
+        )
+    )
 
-  new SlashCommandBuilder()
-    .setName("owner")
-    .setDescription("Check if you are the bot owner."),
+    .addSubcommand(sub =>
+      sub
+        .setName("remove")
+        .setDescription("Remove a player")
+        .addStringOption(option =>
+          option
+            .setName("player")
+            .setDescription("Player name")
+            .setRequired(true)
+        )
+        .addStringOption(option =>
+          option
+            .setName("kit")
+            .setDescription("FFA kit")
+            .setRequired(true)
+            .addChoices(
+              ...KITS.map(kit => ({
+                name: KIT_LABELS[kit],
+                value: kit
+              }))
+            )
+        )
+    )
 
-  tierCommand
+    .addSubcommand(sub =>
+      sub
+        .setName("list")
+        .setDescription("Show a kit tier list")
+        .addStringOption(option =>
+          option
+            .setName("kit")
+            .setDescription("FFA kit")
+            .setRequired(true)
+            .addChoices(
+              ...KITS.map(kit => ({
+                name: KIT_LABELS[kit],
+                value: kit
+              }))
+            )
+        )
+    )
+
+    .addSubcommand(sub =>
+      sub
+        .setName("player")
+        .setDescription("Show a player's rankings")
+        .addStringOption(option =>
+          option
+            .setName("player")
+            .setDescription("Player name")
+            .setRequired(true)
+        )
+    )
 ].map(command => command.toJSON());
 
-// ==============================
-// REGISTER COMMANDS
-// ==============================
+const rest = new REST({ version: "10" }).setToken(TOKEN);
+
+async function registerCommands() {
+  await rest.put(
+    Routes.applicationGuildCommands(
+      CLIENT_ID,
+      GUILD_ID
+    ),
+    {
+      body: commands
+    }
+  );
+
+  console.log("✅ Slash commands registered!");
+}
 
 client.once("ready", async () => {
-  console.log(`✅ Logged in as ${client.user.tag}`);
-  console.log("🟢 HAVOC STYX bot is online!");
-
-  const rest = new REST({ version: "10" }).setToken(TOKEN);
+  console.log(`Logged in as ${client.user.tag}`);
 
   try {
-    await rest.put(
-      Routes.applicationCommands(CLIENT_ID),
-      { body: commands }
-    );
-
-    console.log("✅ Slash commands registered!");
+    await registerCommands();
   } catch (error) {
-    console.error("❌ Failed to register commands:", error);
+    console.error("❌ Could not register commands:", error);
   }
-});
 
-// ==============================
-// INTERACTION HANDLER
-// ==============================
+  console.log("🟢 HAVOC STYX bot is online!");
+});
 
 client.on("interactionCreate", async interaction => {
-  if (!interaction.isChatInputCommand()) return;
+  if (
+    !interaction.isChatInputCommand() ||
+    interaction.commandName !== "tier"
+  ) {
+    return;
+  }
 
-  // ==========================
-  // /PING
-  // ==========================
+  const subcommand = interaction.options.getSubcommand();
 
-  if (interaction.commandName === "ping") {
+  if (subcommand === "add") {
+    const player = interaction.options
+      .getString("player")
+      .trim();
+
+    const kit = interaction.options.getString("kit");
+    const tier = interaction.options.getString("tier");
+
+    data[kit][player] = tier;
+
+    saveData(data);
+
     return interaction.reply(
-      "🏓 **Pong! HAVOC STYX is online!**"
+      `✅ **${player}** is now **${tier}** in **${KIT_LABELS[kit]}**.`
     );
   }
 
-  // ==========================
-  // /SERVER
-  // ==========================
+  if (subcommand === "remove") {
+    const player = interaction.options
+      .getString("player")
+      .trim();
 
-  if (interaction.commandName === "server") {
-    return interaction.reply(
-      "🔥 **HAVOC STYX FFA**\n\n" +
-      "🌐 IP: `havocffa.playwithbao.com:41367`\n" +
-      "⚔️ Mode: FFA\n" +
-      "🏆 Tier Testing: Enabled\n" +
-      "💬 Discord: https://discord.gg/RaJMvHaXB"
-    );
-  }
+    const kit = interaction.options.getString("kit");
 
-  // ==========================
-  // /OWNER
-  // ==========================
-
-  if (interaction.commandName === "owner") {
-    if (interaction.user.id !== OWNER_ID) {
-      return interaction.reply({
-        content: "❌ You are not the owner.",
-        ephemeral: true
-      });
+    if (!data[kit][player]) {
+      return interaction.reply(
+        `❌ **${player}** isn't on the ${KIT_LABELS[kit]} tier list.`
+      );
     }
 
-    return interaction.reply({
-      content: "👑 **You are the HAVOC STYX owner!**",
-      ephemeral: true
+    delete data[kit][player];
+
+    saveData(data);
+
+    return interaction.reply(
+      `✅ Removed **${player}** from **${KIT_LABELS[kit]}**.`
+    );
+  }
+
+  if (subcommand === "list") {
+    const kit = interaction.options.getString("kit");
+
+    const lines = TIERS.map(tier => {
+      const players = Object.entries(data[kit])
+        .filter(([, rank]) => rank === tier)
+        .map(([name]) => name);
+
+      return `**${tier}** — ${
+        players.length
+          ? players.join(", ")
+          : "—"
+      }`;
     });
+
+    return interaction.reply(
+      `**${KIT_LABELS[kit]} Tier List**\n\n${lines.join("\n")}`
+    );
   }
 
-  // ==========================
-  // TIER COMMAND
-  // ==========================
+  if (subcommand === "player") {
+    const player = interaction.options
+      .getString("player")
+      .trim();
 
-  if (interaction.commandName === "tier") {
-    const subcommand = interaction.options.getSubcommand();
+    const rows = KITS.map(kit => {
+      const rank = data[kit][player] || "Unranked";
 
-    // ========================
-    // TIER ADD
-    // ========================
+      return `${KIT_LABELS[kit]} — **${rank}**`;
+    });
 
-    if (subcommand === "add") {
-      if (interaction.user.id !== OWNER_ID) {
-        return interaction.reply({
-          content: "❌ Only the owner can add players to the tier list.",
-          ephemeral: true
-        });
-      }
-
-      const player = interaction.options
-        .getString("player")
-        .trim();
-
-      const tier = interaction.options
-        .getString("tier")
-        .toUpperCase();
-
-      tiers[player.toLowerCase()] = {
-        name: player,
-        tier: tier
-      };
-
-      saveTiers(tiers);
-
-      return interaction.reply(
-        `✅ **${player}** has been added as **${tier}**!`
-      );
-    }
-
-    // ========================
-    // TIER REMOVE
-    // ========================
-
-    if (subcommand === "remove") {
-      if (interaction.user.id !== OWNER_ID) {
-        return interaction.reply({
-          content: "❌ Only the owner can remove players from the tier list.",
-          ephemeral: true
-        });
-      }
-
-      const player = interaction.options
-        .getString("player")
-        .trim();
-
-      const key = player.toLowerCase();
-
-      if (!tiers[key]) {
-        return interaction.reply(
-          `❌ **${player}** is not on the tier list.`
-        );
-      }
-
-      delete tiers[key];
-
-      saveTiers(tiers);
-
-      return interaction.reply(
-        `🗑️ **${player}** has been removed from the tier list.`
-      );
-    }
-
-    // ========================
-    // TIER LIST
-    // ========================
-
-    if (subcommand === "list") {
-      const players = Object.values(tiers);
-
-      if (players.length === 0) {
-        return interaction.reply(
-          "📋 The tier list is currently empty."
-        );
-      }
-
-      const tierOrder = [
-        "HT1",
-        "LT1",
-        "HT2",
-        "LT2",
-        "HT3",
-        "LT3",
-        "HT4",
-        "LT4",
-        "HT5",
-        "LT5"
-      ];
-
-      let message = "🏆 **HAVOC STYX TIER LIST**\n\n";
-
-      for (const tier of tierOrder) {
-        const tierPlayers = players.filter(
-          player => player.tier === tier
-        );
-
-        if (tierPlayers.length > 0) {
-          message += `**${tier}**\n`;
-
-          for (const player of tierPlayers) {
-            message += `• ${player.name}\n`;
-          }
-
-          message += "\n";
-        }
-      }
-
-      return interaction.reply(message);
-    }
-
-    // ========================
-    // TIER PLAYER
-    // ========================
-
-    if (subcommand === "player") {
-      const player = interaction.options
-        .getString("player")
-        .trim();
-
-      const result = tiers[player.toLowerCase()];
-
-      if (!result) {
-        return interaction.reply(
-          `❌ **${player}** isn't on the tier list.`
-        );
-      }
-
-      return interaction.reply(
-        `🏆 **${result.name}** → **${result.tier}**`
-      );
-    }
+    return interaction.reply(
+      `**${player} — HAVOC STYX FFA Rankings**\n\n${rows.join("\n")}`
+    );
   }
 });
 
-// ==============================
-// LOGIN
-// ==============================
+const app = express();
+
+app.use(express.json());
+app.use(express.static("public"));
+
+app.get("/api/tiers", (req, res) => {
+  res.json({
+    kits: KITS.map(kit => ({
+      id: kit,
+      name: KIT_LABELS[kit]
+    })),
+    tiers: TIERS,
+    data
+  });
+});
+
+app.get("/api/health", (req, res) => {
+  res.json({
+    ok: true
+  });
+});
+
+app.listen(PORT, () => {
+  console.log(`🌐 Website running on port ${PORT}`);
+});
 
 client.login(TOKEN);
