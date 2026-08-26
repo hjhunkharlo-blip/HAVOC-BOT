@@ -1,5 +1,5 @@
 // index.js
-// Improved HAVOC STYX: persistence, validation, logging, security middlewares
+// Improved HAVOC STYX: numeric ranks (1-50), points system, 10 kits, leaderboard endpoint, and hardened error handling
 
 require("dotenv").config();
 
@@ -16,6 +16,7 @@ const {
   REST,
   Routes,
   SlashCommandBuilder,
+  SlashCommandIntegerOption,
   PermissionsBitField
 } = require("discord.js");
 
@@ -31,7 +32,9 @@ let tierData = null;
    CONFIG
 ========================================= */
 
-const TIERS = ["HT1", "LT1", "HT2", "LT2", "HT3", "LT3", "HT4", "LT4", "HT5", "LT5"];
+// Numeric ranks 1..50 (no letters) as requested
+const TIERS = Array.from({ length: 50 }, (_, i) => String(i + 1));
+const TIER_SET = new Set(TIERS);
 
 const KITS = [
   { id: "sword", name: "⚔️ Sword" },
@@ -42,11 +45,12 @@ const KITS = [
   { id: "dia-smp", name: "💠 Dia SMP" },
   { id: "uhc", name: "❤️ UHC" },
   { id: "mace", name: "🔨 Mace" },
-  { id: "spear-mace", name: "🔱⚒️ Spear Mace" }
+  { id: "spear-mace", name: "🔱⚒️ Spear Mace" },
+  // 10th kit added per request
+  { id: "bow", name: "🏹 Bow" }
 ];
 
 const KIT_IDS = new Set(KITS.map(k => k.id));
-const TIER_SET = new Set(TIERS);
 
 const RESTRICT_COMMANDS = process.env.RESTRICT_TIER_COMMANDS === "true";
 const ADMIN_ROLE_ID = process.env.ADMIN_ROLE_ID || "";
@@ -96,8 +100,8 @@ async function loadData() {
   for (const k of KIT_IDS) {
     tierData[k] = tierData[k] || {};
   }
-  // keep the sample entry if missing
-  tierData["spear-mace"] = tierData["spear-mace"] || { Yunglah: "LT5" };
+  // keep a sample entry if missing
+  tierData["spear-mace"] = tierData["spear-mace"] || { Yunglah: "50" };
   await saveData();
 }
 
@@ -140,6 +144,7 @@ app.get("/", (req, res) => {
   res.json({ status: "online", bot: "HAVOC STYX", api: "online" });
 });
 
+// Return kits, tiers and current data. Include computed point mapping info.
 app.get("/api/tiers", (req, res) => {
   if (!tierData) {
     return res.status(500).json({ error: "tier data not loaded" });
@@ -147,11 +152,33 @@ app.get("/api/tiers", (req, res) => {
   res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
   res.setHeader("Pragma", "no-cache");
   res.setHeader("Expires", "0");
-  // Return both names for compatibility with different frontends
-  res.json({ kits: KITS, tiers: TIERS, data: tierData, tierData: tierData });
+  const pointsByTier = TIERS.reduce((acc, t) => {
+    acc[t] = computePointsForRank(parseInt(t, 10));
+    return acc;
+  }, {});
+  res.json({ kits: KITS, tiers: TIERS, pointsByTier, data: tierData });
 });
 
 app.get("/api/ping", (req, res) => res.json({ ok: true, ts: Date.now() }));
+
+// Leaderboard for a specific kit — returns players sorted by rank (1 best)
+app.get("/api/kit/:kit/leaderboard", (req, res) => {
+  const kit = req.params.kit;
+  if (!KIT_IDS.has(kit)) return res.status(404).json({ error: "unknown_kit" });
+  const map = tierData && tierData[kit] ? tierData[kit] : {};
+  const rows = Object.keys(map).map(player => {
+    const stored = map[player];
+    const rank = normalizeStoredRank(stored); // integer or null
+    const points = rank ? computePointsForRank(rank) : 0;
+    return { player, rank, points, tier: stored };
+  });
+  rows.sort((a, b) => {
+    // sort by points desc, then player name
+    if (b.points !== a.points) return b.points - a.points;
+    return a.player.localeCompare(b.player);
+  });
+  res.json({ kit, rows, count: rows.length });
+});
 
 // Basic JSON error handler for API
 app.use((err, req, res, next) => {
@@ -166,6 +193,7 @@ app.use((err, req, res, next) => {
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
+// Build slash command: use an integer option for tier (1-50) because Discord has a 25-choice limit
 const tierCommand = new SlashCommandBuilder()
   .setName("tier")
   .setDescription("Manage HAVOC STYX player tiers")
@@ -181,12 +209,14 @@ const tierCommand = new SlashCommandBuilder()
           .setRequired(true)
           .addChoices(...KITS.map(kit => ({ name: kit.name, value: kit.id })))
       )
-      .addStringOption(opt =>
+      // use integer option for tier so users provide 1..50
+      .addIntegerOption(opt =>
         opt
           .setName("tier")
-          .setDescription("Tier")
+          .setDescription("Rank 1 (best) to 50 (worst)")
           .setRequired(true)
-          .addChoices(...TIERS.map(tier => ({ name: tier, value: tier })))
+          .setMinValue(1)
+          .setMaxValue(50)
       )
   )
   .addSubcommand(sub =>
@@ -246,6 +276,34 @@ function isAdminInteraction(interaction) {
 }
 
 /* =========================================
+   RANK/POINT HELPERS
+========================================= */
+
+// Convert stored tier value (could be string or number or legacy like "LT5") into an integer rank 1..50 or null
+function normalizeStoredRank(value) {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    if (value >= 1 && value <= 50) return value;
+    return null;
+  }
+  if (typeof value === 'string') {
+    // If it's purely numeric, parse it
+    const n = parseInt(value, 10);
+    if (Number.isFinite(n) && n >= 1 && n <= 50) return n;
+    // legacy formats (e.g., HT1/LT5) are not auto-mapped — return null so they appear at bottom
+    return null;
+  }
+  return null;
+}
+
+// Simple linear points system: rank 1 -> 50 points, rank 50 -> 1 point
+function computePointsForRank(rank) {
+  if (!Number.isFinite(rank)) return 0;
+  if (rank < 1) return 0;
+  if (rank > 50) return 0;
+  return 51 - rank; // 1 -> 50, 50 -> 1
+}
+
+/* =========================================
    INTERACTION HANDLER
 ========================================= */
 
@@ -264,7 +322,7 @@ client.on("interactionCreate", async interaction => {
     if (subcommand === "add") {
       const rawPlayer = interaction.options.getString("player", true);
       const kit = interaction.options.getString("kit", true);
-      const tier = interaction.options.getString("tier", true);
+      const tierInt = interaction.options.getInteger("tier", true);
 
       const player = safeNormalizePlayer(rawPlayer);
       if (!player) {
@@ -277,18 +335,18 @@ client.on("interactionCreate", async interaction => {
         return;
       }
 
-      if (!TIER_SET.has(tier)) {
-        await interaction.reply({ content: "❌ Invalid tier.", ephemeral: true });
+      if (!Number.isInteger(tierInt) || tierInt < 1 || tierInt > 50) {
+        await interaction.reply({ content: "❌ Invalid rank. Must be an integer between 1 and 50.", ephemeral: true });
         return;
       }
 
       tierData[kit] = tierData[kit] || {};
-      tierData[kit][player] = tier;
+      tierData[kit][player] = tierInt; // store as number
       await saveData();
 
-      console.info(`[TIER ADD] ${player} → ${kit} → ${tier}`);
+      console.info(`[TIER ADD] ${player} → ${kit} → ${tierInt}`);
       await interaction.reply({
-        content: `✅ **${player}** is now **${tier}** in **${KITS.find(k => k.id === kit)?.name || kit}**.\n\n🌐 The website will update automatically.`
+        content: `✅ **${player}** is now **#${tierInt}** in **${KITS.find(k => k.id === kit)?.name || kit}**.\n\n🌐 The website will update automatically.`
       });
       return;
     }
@@ -308,7 +366,7 @@ client.on("interactionCreate", async interaction => {
         return;
       }
 
-      if (!tierData[kit] || !tierData[kit][player]) {
+      if (!tierData[kit] || tierData[kit][player] === undefined) {
         await interaction.reply({ content: `❌ **${player}** is not ranked in that kit.`, ephemeral: true });
         return;
       }
