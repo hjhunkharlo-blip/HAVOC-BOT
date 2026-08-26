@@ -15,32 +15,19 @@ const {
 
 const app = express();
 
-const PORT = process.env.PORT || 8080;
-const DATA_FILE = path.resolve(__dirname, "tiers.json");
+const PORT = Number(process.env.PORT) || 8080;
+const DATA_FILE = path.join(__dirname, "tiers.json");
 
-/* =========================================
+/* =====================================================
    MIDDLEWARE
-========================================= */
+===================================================== */
 
-app.use(
-  cors({
-    origin: "*",
-    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allowedHeaders: [
-      "Origin",
-      "X-Requested-With",
-      "Content-Type",
-      "Accept",
-      "Authorization"
-    ]
-  })
-);
-
+app.use(cors({ origin: "*" }));
 app.use(express.json());
 
-/* =========================================
+/* =====================================================
    TIERS
-========================================= */
+===================================================== */
 
 const TIERS = [
   "HT1",
@@ -55,30 +42,26 @@ const TIERS = [
   "LT5"
 ];
 
-/* =========================================
-   POINT SYSTEM
-========================================= */
+/* =====================================================
+   POINTS
+===================================================== */
 
 const POINTS = {
   HT1: 10,
   LT1: 8,
-
   HT2: 8,
   LT2: 6,
-
   HT3: 5,
   LT3: 4,
-
   HT4: 3,
   LT4: 2,
-
   HT5: 1,
   LT5: 1
 };
 
-/* =========================================
+/* =====================================================
    KITS
-========================================= */
+===================================================== */
 
 const KITS = [
   {
@@ -133,10 +116,6 @@ const KITS = [
   }
 ];
 
-/* =========================================
-   KIT ALIASES
-========================================= */
-
 const KIT_ALIASES = {};
 
 for (const kit of KITS) {
@@ -145,9 +124,9 @@ for (const kit of KITS) {
   }
 }
 
-/* =========================================
+/* =====================================================
    DATA
-========================================= */
+===================================================== */
 
 function createEmptyData() {
   const data = {};
@@ -161,44 +140,9 @@ function createEmptyData() {
 
 let tierData = createEmptyData();
 
-/* =========================================
-   LOAD DATA
-========================================= */
-
-async function loadData() {
-  try {
-    const raw = await fs.readFile(DATA_FILE, "utf8");
-
-    const saved = JSON.parse(raw);
-    const merged = createEmptyData();
-
-    for (const kit of KITS) {
-      if (
-        saved &&
-        saved[kit.id] &&
-        typeof saved[kit.id] === "object"
-      ) {
-        merged[kit.id] = saved[kit.id];
-      }
-    }
-
-    tierData = merged;
-
-    console.log("✅ Tier data loaded.");
-  } catch (error) {
-    console.log(
-      "⚠️ tiers.json missing or invalid. Creating new data."
-    );
-
-    tierData = createEmptyData();
-
-    await saveData();
-  }
-}
-
-/* =========================================
-   SAVE DATA
-========================================= */
+/* =====================================================
+   SAVE
+===================================================== */
 
 async function saveData() {
   try {
@@ -210,16 +154,47 @@ async function saveData() {
 
     console.log("💾 Tier data saved.");
   } catch (error) {
-    console.error(
-      "❌ Could not save tiers.json:",
-      error
-    );
+    console.error("❌ Save error:", error);
   }
 }
 
-/* =========================================
+/* =====================================================
+   LOAD
+===================================================== */
+
+async function loadData() {
+  try {
+    const raw = await fs.readFile(DATA_FILE, "utf8");
+    const saved = JSON.parse(raw);
+
+    const merged = createEmptyData();
+
+    for (const kit of KITS) {
+      if (
+        saved &&
+        saved[kit.id] &&
+        typeof saved[kit.id] === "object" &&
+        !Array.isArray(saved[kit.id])
+      ) {
+        merged[kit.id] = saved[kit.id];
+      }
+    }
+
+    tierData = merged;
+
+    console.log("✅ Tier data loaded.");
+  } catch (error) {
+    console.log("⚠️ Creating new tiers.json...");
+
+    tierData = createEmptyData();
+
+    await saveData();
+  }
+}
+
+/* =====================================================
    HELPERS
-========================================= */
+===================================================== */
 
 function normalizePlayer(name) {
   if (typeof name !== "string") {
@@ -240,14 +215,20 @@ function normalizeKit(input) {
     return null;
   }
 
-  return (
-    KIT_ALIASES[input.trim().toLowerCase()] || null
+  return KIT_ALIASES[input.trim().toLowerCase()] || null;
+}
+
+function findPlayerInKit(kitId, player) {
+  const players = tierData[kitId] || {};
+
+  return Object.keys(players).find(
+    name => name.toLowerCase() === player.toLowerCase()
   );
 }
 
-/* =========================================
-   OVERALL RANKING CALCULATOR
-========================================= */
+/* =====================================================
+   OVERALL RANKINGS
+===================================================== */
 
 function calculateOverallRankings() {
   const players = {};
@@ -255,31 +236,20 @@ function calculateOverallRankings() {
   for (const kit of KITS) {
     const kitPlayers = tierData[kit.id] || {};
 
-    for (const [player, tier] of Object.entries(kitPlayers)) {
+    for (const [playerName, tier] of Object.entries(kitPlayers)) {
       if (!TIERS.includes(tier)) {
         continue;
       }
 
-      /*
-       * Make player names case-insensitive.
-       * Example:
-       * Steve
-       * steve
-       * STEVE
-       *
-       * These are treated as one player.
-       */
-
       const existingName = Object.keys(players).find(
-        name =>
-          name.toLowerCase() === player.toLowerCase()
+        name => name.toLowerCase() === playerName.toLowerCase()
       );
 
-      const key = existingName || player;
+      const playerKey = existingName || playerName;
 
-      if (!players[key]) {
-        players[key] = {
-          player: key,
+      if (!players[playerKey]) {
+        players[playerKey] = {
+          player: playerKey,
           totalPoints: 0,
           kits: []
         };
@@ -287,24 +257,16 @@ function calculateOverallRankings() {
 
       const points = POINTS[tier] || 0;
 
-      players[key].totalPoints += points;
+      players[playerKey].totalPoints += points;
 
-      players[key].kits.push({
+      players[playerKey].kits.push({
         kit: kit.id,
         kitName: kit.name,
-        tier: tier,
-        points: points
+        tier,
+        points
       });
     }
   }
-
-  /*
-   * SORTING:
-   *
-   * 1. Highest total points
-   * 2. If tied, player with more ranked kits
-   * 3. If still tied, alphabetical
-   */
 
   return Object.values(players)
     .sort((a, b) => {
@@ -326,75 +288,18 @@ function calculateOverallRankings() {
     }));
 }
 
-/* =========================================
-   PLAYER PROFILE
-========================================= */
-
-function getPlayerProfile(playerName) {
-  const requested = playerName.toLowerCase();
-
-  const kits = [];
-
-  for (const kit of KITS) {
-    const kitPlayers = tierData[kit.id] || {};
-
-    const foundName = Object.keys(kitPlayers).find(
-      name =>
-        name.toLowerCase() === requested
-    );
-
-    if (foundName) {
-      const tier = kitPlayers[foundName];
-
-      kits.push({
-        kit: kit.id,
-        kitName: kit.name,
-        tier: tier,
-        points: POINTS[tier] || 0
-      });
-    }
-  }
-
-  const totalPoints = kits.reduce(
-    (sum, item) => sum + item.points,
-    0
-  );
-
-  const rankings = calculateOverallRankings();
-
-  const ranking = rankings.find(
-    item =>
-      item.player.toLowerCase() === requested
-  );
-
-  return {
-    player: ranking
-      ? ranking.player
-      : playerName,
-    totalPoints: totalPoints,
-    overallRank: ranking
-      ? ranking.rank
-      : null,
-    kits: kits
-  };
-}
-
-/* =========================================
+/* =====================================================
    API RESPONSE
-========================================= */
+===================================================== */
 
 function getTierResponse() {
   return {
     status: "online",
     bot: "HAVOC STYX",
     api: "tier-list",
-    version: "4.0",
+    version: "5.0",
 
-    kits: KITS.map(kit => ({
-      id: kit.id,
-      name: kit.name,
-      aliases: kit.aliases
-    })),
+    kits: KITS,
 
     tiers: TIERS,
 
@@ -402,62 +307,54 @@ function getTierResponse() {
 
     data: tierData,
 
-    /*
-     * AUTOMATIC OVERALL RANKINGS
-     * No point limit.
-     */
     overallRankings: calculateOverallRankings(),
 
     timestamp: new Date().toISOString()
   };
 }
 
-/* =========================================
-   BASIC ROUTES
-========================================= */
+/* =====================================================
+   ROOT
+===================================================== */
 
 app.get("/", (req, res) => {
   res.status(200).json({
     status: "online",
     bot: "HAVOC STYX",
     api: "tier-list",
-    version: "4.0"
+    version: "5.0"
   });
 });
 
-/* =========================================
-   MAIN TIER API
-========================================= */
+/* =====================================================
+   TIERS API
+===================================================== */
 
 app.get("/api/tiers", (req, res) => {
   res.set({
-    "Cache-Control":
-      "no-store, no-cache, must-revalidate, proxy-revalidate",
-    "Pragma": "no-cache",
-    "Expires": "0",
+    "Cache-Control": "no-store",
     "Access-Control-Allow-Origin": "*"
   });
 
   res.status(200).json(getTierResponse());
 });
 
-/* =========================================
+/* =====================================================
    BACKUP TIER API
-========================================= */
+===================================================== */
 
 app.get("/api/tier", (req, res) => {
   res.set({
-    "Cache-Control":
-      "no-store, no-cache, must-revalidate",
+    "Cache-Control": "no-store",
     "Access-Control-Allow-Origin": "*"
   });
 
   res.status(200).json(getTierResponse());
 });
 
-/* =========================================
-   OVERALL RANKINGS API
-========================================= */
+/* =====================================================
+   RANKINGS API
+===================================================== */
 
 app.get("/api/rankings", (req, res) => {
   res.set({
@@ -473,42 +370,79 @@ app.get("/api/rankings", (req, res) => {
   });
 });
 
-/* =========================================
-   PLAYER PROFILE API
-========================================= */
+/* =====================================================
+   PLAYER API
+===================================================== */
 
 app.get("/api/player/:player", (req, res) => {
-  const requested = normalizePlayer(req.params.player);
+  const player = normalizePlayer(req.params.player);
 
-  if (!requested) {
+  if (!player) {
     return res.status(400).json({
+      status: "error",
       error: "Invalid Minecraft player name."
     });
   }
 
-  const profile = getPlayerProfile(requested);
+  const kits = [];
 
-  res.set({
-    "Cache-Control": "no-store",
-    "Access-Control-Allow-Origin": "*"
-  });
+  let displayName = player;
+
+  for (const kit of KITS) {
+    const found = findPlayerInKit(kit.id, player);
+
+    if (!found) {
+      continue;
+    }
+
+    displayName = found;
+
+    const tier = tierData[kit.id][found];
+
+    if (!TIERS.includes(tier)) {
+      continue;
+    }
+
+    kits.push({
+      kit: kit.id,
+      kitName: kit.name,
+      tier,
+      points: POINTS[tier]
+    });
+  }
+
+  if (kits.length === 0) {
+    return res.status(404).json({
+      status: "error",
+      error: "Player is not ranked."
+    });
+  }
+
+  const totalPoints = kits.reduce(
+    (sum, item) => sum + item.points,
+    0
+  );
+
+  const rankings = calculateOverallRankings();
+
+  const ranking = rankings.find(
+    item => item.player.toLowerCase() === player.toLowerCase()
+  );
 
   res.status(200).json({
     status: "online",
-    ...profile
+    player: displayName,
+    totalPoints,
+    overallRank: ranking ? ranking.rank : null,
+    kits
   });
 });
 
-/* =========================================
+/* =====================================================
    PING
-========================================= */
+===================================================== */
 
 app.get("/api/ping", (req, res) => {
-  res.set({
-    "Cache-Control": "no-store",
-    "Access-Control-Allow-Origin": "*"
-  });
-
   res.status(200).json({
     ok: true,
     status: "online",
@@ -517,151 +451,146 @@ app.get("/api/ping", (req, res) => {
   });
 });
 
-/* =========================================
-   HEALTH CHECK
-========================================= */
+/* =====================================================
+   HEALTH
+===================================================== */
 
 app.get("/health", (req, res) => {
   res.status(200).json({
     ok: true,
-    service: "HAVOC STYX API"
+    status: "online",
+    service: "HAVOC STYX API",
+    timestamp: Date.now()
   });
 });
 
-/* =========================================
+/* =====================================================
    DISCORD CLIENT
-========================================= */
+===================================================== */
 
 const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds
-  ]
+  intents: [GatewayIntentBits.Guilds]
 });
 
-/* =========================================
+/* =====================================================
    SLASH COMMAND
-========================================= */
+===================================================== */
 
-const tierCommand =
-  new SlashCommandBuilder()
-    .setName("tier")
-    .setDescription("Manage HAVOC STYX tiers")
+const tierCommand = new SlashCommandBuilder()
+  .setName("tier")
+  .setDescription("Manage HAVOC STYX tiers")
 
-    /* =====================================
-       ADD
-    ===================================== */
+  /* ADD */
+  .addSubcommand(sub =>
+    sub
+      .setName("add")
+      .setDescription("Add or update a player's tier")
 
-    .addSubcommand(sub =>
-      sub
-        .setName("add")
-        .setDescription("Add or update a player tier")
+      .addStringOption(option =>
+        option
+          .setName("player")
+          .setDescription("Minecraft player name")
+          .setRequired(true)
+      )
 
-        .addStringOption(opt =>
-          opt
-            .setName("player")
-            .setDescription("Minecraft player name")
-            .setRequired(true)
-        )
+      .addStringOption(option =>
+        option
+          .setName("tier")
+          .setDescription("Player tier")
+          .setRequired(true)
+          .addChoices(
+            ...TIERS.map(tier => ({
+              name: tier,
+              value: tier
+            }))
+          )
+      )
 
-        .addStringOption(opt =>
-          opt
-            .setName("tier")
-            .setDescription("Tier")
-            .setRequired(true)
-            .addChoices(
-              ...TIERS.map(tier => ({
-                name: tier,
-                value: tier
-              }))
-            )
-        )
+      .addStringOption(option =>
+        option
+          .setName("kit")
+          .setDescription("PvP kit")
+          .setRequired(true)
+          .addChoices(
+            ...KITS.map(kit => ({
+              name: kit.name,
+              value: kit.id
+            }))
+          )
+      )
+  )
 
-        .addStringOption(opt =>
-          opt
-            .setName("kit")
-            .setDescription("Kit")
-            .setRequired(true)
-            .addChoices(
-              ...KITS.map(kit => ({
-                name: kit.name,
-                value: kit.id
-              }))
-            )
-        )
-    )
+  /* REMOVE */
+  .addSubcommand(sub =>
+    sub
+      .setName("remove")
+      .setDescription("Remove a player from a kit")
 
-    /* =====================================
-       REMOVE
-    ===================================== */
+      .addStringOption(option =>
+        option
+          .setName("player")
+          .setDescription("Minecraft player name")
+          .setRequired(true)
+      )
 
-    .addSubcommand(sub =>
-      sub
-        .setName("remove")
-        .setDescription("Remove a player from a kit")
+      .addStringOption(option =>
+        option
+          .setName("kit")
+          .setDescription("PvP kit")
+          .setRequired(true)
+          .addChoices(
+            ...KITS.map(kit => ({
+              name: kit.name,
+              value: kit.id
+            }))
+          )
+      )
+  )
 
-        .addStringOption(opt =>
-          opt
-            .setName("player")
-            .setDescription("Minecraft player name")
-            .setRequired(true)
-        )
+  /* GET */
+  .addSubcommand(sub =>
+    sub
+      .setName("get")
+      .setDescription("Get a player's tier")
 
-        .addStringOption(opt =>
-          opt
-            .setName("kit")
-            .setDescription("Kit")
-            .setRequired(true)
-            .addChoices(
-              ...KITS.map(kit => ({
-                name: kit.name,
-                value: kit.id
-              }))
-            )
-        )
-    )
+      .addStringOption(option =>
+        option
+          .setName("player")
+          .setDescription("Minecraft player name")
+          .setRequired(true)
+      )
 
-    /* =====================================
-       GET
-    ===================================== */
+      .addStringOption(option =>
+        option
+          .setName("kit")
+          .setDescription("PvP kit")
+          .setRequired(true)
+          .addChoices(
+            ...KITS.map(kit => ({
+              name: kit.name,
+              value: kit.id
+            }))
+          )
+      )
+  );
 
-    .addSubcommand(sub =>
-      sub
-        .setName("get")
-        .setDescription("Get a player's ranking")
-
-        .addStringOption(opt =>
-          opt
-            .setName("player")
-            .setDescription("Minecraft player name")
-            .setRequired(true)
-        )
-
-        .addStringOption(opt =>
-          opt
-            .setName("kit")
-            .setDescription("Kit")
-            .setRequired(true)
-            .addChoices(
-              ...KITS.map(kit => ({
-                name: kit.name,
-                value: kit.id
-              }))
-            )
-        )
-    );
-
-/* =========================================
+/* =====================================================
    DISCORD READY
-========================================= */
+===================================================== */
 
 client.once("ready", async () => {
-  console.log(
-    `🤖 Logged in as ${client.user.tag}`
-  );
+  console.log(`🤖 Logged in as ${client.user.tag}`);
+
+  const token = process.env.DISCORD_TOKEN;
+
+  if (!token) {
+    console.error("❌ DISCORD_TOKEN is missing.");
+    return;
+  }
 
   const rest = new REST({
     version: "10"
-  }).setToken(process.env.DISCORD_TOKEN);
+  }).setToken(token);
 
   try {
     if (process.env.GUILD_ID) {
@@ -671,319 +600,344 @@ client.once("ready", async () => {
           process.env.GUILD_ID
         ),
         {
-          body: [
-            tierCommand.toJSON()
-          ]
+          body: [tierCommand.toJSON()]
         }
       );
 
-      console.log(
-        "✅ Guild slash command registered."
-      );
+      console.log("✅ Guild slash command registered.");
     } else {
       await rest.put(
-        Routes.applicationCommands(
-          client.user.id
-        ),
+        Routes.applicationCommands(client.user.id),
         {
-          body: [
-            tierCommand.toJSON()
-          ]
+          body: [tierCommand.toJSON()]
         }
       );
 
-      console.log(
-        "✅ Global slash command registered."
-      );
+      console.log("✅ Global slash command registered.");
     }
   } catch (error) {
     console.error(
-      "❌ Command registration failed:",
+      "❌ Slash command registration failed:",
       error
     );
   }
 });
 
-/* =========================================
+/* =====================================================
    DISCORD COMMAND HANDLER
-========================================= */
+===================================================== */
 
-client.on(
-  "interactionCreate",
-  async interaction => {
-    if (!interaction.isChatInputCommand()) {
-      return;
-    }
+client.on("interactionCreate", async interaction => {
+  if (!interaction.isChatInputCommand()) {
+    return;
+  }
 
-    if (interaction.commandName !== "tier") {
-      return;
-    }
+  if (interaction.commandName !== "tier") {
+    return;
+  }
 
-    try {
-      const subcommand =
-        interaction.options.getSubcommand();
+  try {
+    const subcommand = interaction.options.getSubcommand();
 
-      /* =====================================
-         ADD
-      ===================================== */
+    /* =================================================
+       ADD
+    ================================================= */
 
-      if (subcommand === "add") {
-        const rawPlayer =
-          interaction.options.getString(
-            "player",
-            true
-          );
+    if (subcommand === "add") {
+      const rawPlayer = interaction.options.getString(
+        "player",
+        true
+      );
 
-        const tier =
-          interaction.options.getString(
-            "tier",
-            true
-          );
+      const tier = interaction.options.getString(
+        "tier",
+        true
+      );
 
-        const kitInput =
-          interaction.options.getString(
-            "kit",
-            true
-          );
+      const kitInput = interaction.options.getString(
+        "kit",
+        true
+      );
 
-        const player =
-          normalizePlayer(rawPlayer);
+      const player = normalizePlayer(rawPlayer);
+      const kit = normalizeKit(kitInput);
 
-        const kit =
-          normalizeKit(kitInput);
-
-        if (!player) {
-          await interaction.reply({
-            content:
-              "❌ Invalid Minecraft player name.",
-            ephemeral: true
-          });
-
-          return;
-        }
-
-        if (!kit) {
-          await interaction.reply({
-            content: "❌ Invalid kit.",
-            ephemeral: true
-          });
-
-          return;
-        }
-
-        if (!TIERS.includes(tier)) {
-          await interaction.reply({
-            content: "❌ Invalid tier.",
-            ephemeral: true
-          });
-
-          return;
-        }
-
-        if (!tierData[kit]) {
-          tierData[kit] = {};
-        }
-
-        /*
-         * ADD OR UPDATE
-         *
-         * If the player already has a tier
-         * in this kit, it gets replaced.
-         * The overall points are automatically
-         * recalculated from the current data.
-         */
-
-        tierData[kit][player] = tier;
-
-        await saveData();
-
-        const kitInfo =
-          KITS.find(k => k.id === kit);
-
-        const profile =
-          getPlayerProfile(player);
-
-        const rankings =
-          calculateOverallRankings();
-
-        const ranking =
-          rankings.find(
-            item =>
-              item.player.toLowerCase() ===
-              player.toLowerCase()
-          );
-
-        await interaction.reply({
-          content:
-            `✅ **${player}** updated!\n\n` +
-            `🎮 Kit: **${kitInfo.name}**\n` +
-            `🏆 Tier: **${tier}**\n` +
-            `⭐ Kit Points: **${POINTS[tier]}**\n` +
-            `📊 Overall Points: **${profile.totalPoints}**\n` +
-            `🏅 Overall Rank: **#${ranking ? ranking.rank : "?"}**`
+      if (!player) {
+        return interaction.reply({
+          content: "❌ Invalid Minecraft player name.",
+          ephemeral: true
         });
-
-        console.log(
-          `[TIER ADD] ${player} → ${kit} → ${tier}`
-        );
-
-        return;
       }
 
-      /* =====================================
-         REMOVE
-      ===================================== */
-
-      if (subcommand === "remove") {
-        const rawPlayer =
-          interaction.options.getString(
-            "player",
-            true
-          );
-
-        const rawKit =
-          interaction.options.getString(
-            "kit",
-            true
-          );
-
-        const player =
-          normalizePlayer(rawPlayer);
-
-        const kit =
-          normalizeKit(rawKit);
-
-        if (!player || !kit) {
-          await interaction.reply({
-            content:
-              "❌ Invalid player or kit.",
-            ephemeral: true
-          });
-
-          return;
-        }
-
-        const foundName =
-          Object.keys(
-            tierData[kit] || {}
-          ).find(
-            name =>
-              name.toLowerCase() ===
-              player.toLowerCase()
-          );
-
-        if (!foundName) {
-          await interaction.reply({
-            content:
-              `❌ **${player}** is not ranked in that kit.`,
-            ephemeral: true
-          });
-
-          return;
-        }
-
-        delete tierData[kit][foundName];
-
-        await saveData();
-
-        const profile =
-          getPlayerProfile(player);
-
-        const rankings =
-          calculateOverallRankings();
-
-        const ranking =
-          rankings.find(
-            item =>
-              item.player.toLowerCase() ===
-              player.toLowerCase()
-          );
-
-        await interaction.reply({
-          content:
-            `✅ Removed **${foundName}** from **${kit}**.\n\n` +
-            `📊 Remaining Overall Points: **${profile.totalPoints}**\n` +
-            `🏅 Overall Rank: **${
-              ranking ? "#" + ranking.rank : "Unranked"
-            }**`
+      if (!kit) {
+        return interaction.reply({
+          content: "❌ Invalid kit.",
+          ephemeral: true
         });
-
-        console.log(
-          `[TIER REMOVE] ${foundName} → ${kit}`
-        );
-
-        return;
       }
 
-      /* =====================================
-         GET
-      ===================================== */
+      if (!TIERS.includes(tier)) {
+        return interaction.reply({
+          content: "❌ Invalid tier.",
+          ephemeral: true
+        });
+      }
 
-      if (subcommand === "get") {
-        const rawPlayer =
-          interaction.options.getString(
-            "player",
-            true
-          );
+      if (!tierData[kit]) {
+        tierData[kit] = {};
+      }
 
-        const rawKit =
-          interaction.options.getString(
-            "kit",
-            true
-          );
+      const existingPlayer = findPlayerInKit(
+        kit,
+        player
+      );
 
-        const player =
-          normalizePlayer(rawPlayer);
+      let oldTier = null;
 
-        const kit =
-          normalizeKit(rawKit);
+      if (existingPlayer) {
+        oldTier = tierData[kit][existingPlayer];
 
-        if (!player || !kit) {
-          await interaction.reply({
-            content:
-              "❌ Invalid player or kit.",
-            ephemeral: true
-          });
-
-          return;
+        if (existingPlayer !== player) {
+          delete tierData[kit][existingPlayer];
         }
+      }
 
-        const kitPlayers =
-          tierData[kit] || {};
+      tierData[kit][player] = tier;
 
-        const foundName =
-          Object.keys(kitPlayers).find(
-            name =>
-              name.toLowerCase() ===
-              player.toLowerCase()
-          );
+      await saveData();
 
-        if (!foundName) {
-          await interaction.reply({
-            content:
-              `❌ **${player}** is not ranked in that kit.`,
-            ephemeral: true
-          });
+      const rankings = calculateOverallRankings();
 
-          return;
-        }
+      const ranking = rankings.find(
+        item =>
+          item.player.toLowerCase() ===
+          player.toLowerCase()
+      );
 
-        const tier =
-          kitPlayers[foundName];
+      const kitInfo = KITS.find(
+        item => item.id === kit
+      );
 
-        const profile =
-          getPlayerProfile(foundName);
+      const actionText = oldTier
+        ? `🔄 Updated from **${oldTier}** to **${tier}**`
+        : `🏆 Tier: **${tier}**`;
 
-        const rankings =
-          calculateOverallRankings();
+      return interaction.reply({
+        content:
+          `✅ **${player}** ranked!\n\n` +
+          `🎮 Kit: **${kitInfo.name}**\n` +
+          `${actionText}\n` +
+          `⭐ Tier Points: **${POINTS[tier]}**\n` +
+          `📊 Overall Points: **${ranking.totalPoints}**\n` +
+          `🏅 Overall Rank: **#${ranking.rank}**`
+      });
+    }
 
-        const ranking =
-          rankings.find(
-            item =>
-              item.player.toLowerCase() ===
-              foundName.toLowerCase()
-          );
+    /* =================================================
+       REMOVE
+    ================================================= */
 
-        const kitInfo =
-          KITS.find(
-            item => i
+    if (subcommand === "remove") {
+      const rawPlayer = interaction.options.getString(
+        "player",
+        true
+      );
+
+      const kitInput = interaction.options.getString(
+        "kit",
+        true
+      );
+
+      const player = normalizePlayer(rawPlayer);
+      const kit = normalizeKit(kitInput);
+
+      if (!player || !kit) {
+        return interaction.reply({
+          content: "❌ Invalid player or kit.",
+          ephemeral: true
+        });
+      }
+
+      const existingPlayer = findPlayerInKit(
+        kit,
+        player
+      );
+
+      if (!existingPlayer) {
+        return interaction.reply({
+          content:
+            `❌ **${player}** is not ranked in that kit.`,
+          ephemeral: true
+        });
+      }
+
+      const oldTier =
+        tierData[kit][existingPlayer];
+
+      delete tierData[kit][existingPlayer];
+
+      await saveData();
+
+      const rankings = calculateOverallRankings();
+
+      const ranking = rankings.find(
+        item =>
+          item.player.toLowerCase() ===
+          player.toLowerCase()
+      );
+
+      let message =
+        `✅ Removed **${existingPlayer}** from **${kit}**.\n` +
+        `⭐ Removed Points: **${POINTS[oldTier] || 0}**`;
+
+      if (ranking) {
+        message +=
+          `\n📊 New Overall Points: **${ranking.totalPoints}**` +
+          `\n🏅 New Overall Rank: **#${ranking.rank}**`;
+      } else {
+        message +=
+          `\n📊 Player has no remaining ranked kits.`;
+      }
+
+      return interaction.reply({
+        content: message
+      });
+    }
+
+    /* =================================================
+       GET
+    ================================================= */
+
+    if (subcommand === "get") {
+      const rawPlayer = interaction.options.getString(
+        "player",
+        true
+      );
+
+      const kitInput = interaction.options.getString(
+        "kit",
+        true
+      );
+
+      const player = normalizePlayer(rawPlayer);
+      const kit = normalizeKit(kitInput);
+
+      if (!player || !kit) {
+        return interaction.reply({
+          content: "❌ Invalid player or kit.",
+          ephemeral: true
+        });
+      }
+
+      const existingPlayer = findPlayerInKit(
+        kit,
+        player
+      );
+
+      if (!existingPlayer) {
+        return interaction.reply({
+          content:
+            `❌ **${player}** is not ranked in that kit.`,
+          ephemeral: true
+        });
+      }
+
+      const tier =
+        tierData[kit][existingPlayer];
+
+      const rankings = calculateOverallRankings();
+
+      const ranking = rankings.find(
+        item =>
+          item.player.toLowerCase() ===
+          player.toLowerCase()
+      );
+
+      const kitInfo = KITS.find(
+        item => item.id === kit
+      );
+
+      return interaction.reply({
+        content:
+          `📊 **${existingPlayer}**\n\n` +
+          `🎮 Kit: **${kitInfo.name}**\n` +
+          `🏆 Tier: **${tier}**\n` +
+          `⭐ Tier Points: **${POINTS[tier]}**\n` +
+          `📈 Overall Points: **${ranking ? ranking.totalPoints : 0}**\n` +
+          `🥇 Overall Rank: **#${ranking ? ranking.rank : "N/A"}**`
+      });
+    }
+  } catch (error) {
+    console.error("❌ Interaction error:", error);
+
+    if (!interaction.replied && !interaction.deferred) {
+      await interaction.reply({
+        content: "❌ An internal error occurred.",
+        ephemeral: true
+      });
+    }
+  }
+});
+
+/* =====================================================
+   START SERVER
+===================================================== */
+
+async function start() {
+  await loadData();
+
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log(
+      `🌐 HAVOC STYX API running on port ${PORT}`
+    );
+
+    console.log(
+      `🔗 Port: ${PORT}`
+    );
+
+    console.log(
+      `📊 API: /api/tiers`
+    );
+
+    console.log(
+      `🏆 Rankings: /api/rankings`
+    );
+
+    console.log(
+      `🏓 Ping: /api/ping`
+    );
+
+    console.log(
+      `❤️ Health: /health`
+    );
+  });
+
+  if (!process.env.DISCORD_TOKEN) {
+    console.error(
+      "❌ DISCORD_TOKEN is missing from environment variables."
+    );
+
+    return;
+  }
+
+  try {
+    await client.login(
+      process.env.DISCORD_TOKEN
+    );
+
+    console.log(
+      "✅ Discord bot login successful."
+    );
+  } catch (error) {
+    console.error(
+      "❌ Discord login failed:",
+      error
+    );
+  }
+}
+
+/* =====================================================
+   RUN
+===================================================== */
+
+start();
