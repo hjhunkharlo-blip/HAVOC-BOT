@@ -1,14 +1,22 @@
 {
   "name": "havoc-styx-bot",
-  "version": "1.0.0",
-  "description": "HAVOC STYX Discord bot and tier list API",
+  "version": "2.0.0",
+  "description": "HAVOC STYX Discord bot and tier list API with improved error handling",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "dev": "node --trace-warnings index.js"
   },
   "dependencies": {
     "cors": "^2.8.5",
     "discord.js": "^14.21.0",
-    "express": "^5.1.0"
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
+    "express-rate-limit": "^7.1.5",
+    "helmet": "^7.1.0",
+    "morgan": "^1.10.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }
