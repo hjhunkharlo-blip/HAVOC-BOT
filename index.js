@@ -1,5 +1,6 @@
 // index.js
-// Improved HAVOC STYX: numeric ranks (1-50), points system, 10 kits, leaderboard endpoint, and hardened error handling
+// HAVOC STYX Discord Bot with Tier List API
+// Supports numeric ranks (1-50), 9 kits with aliases, Railway deployment
 
 require("dotenv").config();
 
@@ -16,41 +17,54 @@ const {
   REST,
   Routes,
   SlashCommandBuilder,
-  SlashCommandIntegerOption,
   PermissionsBitField
 } = require("discord.js");
 
 const app = express();
+
+// Railway & Environment Configuration
 const PORT = process.env.PORT || 8080;
-const DATA_FILE = path.resolve(__dirname, "tiers.json");
+const RAILWAY_ENVIRONMENT = process.env.RAILWAY_ENVIRONMENT_NAME || "development";
+const DATA_FILE = process.env.DATA_FILE_PATH || path.resolve(__dirname, "tiers.json");
 const SAVE_DEBOUNCE_MS = parseInt(process.env.SAVE_DEBOUNCE_MS || "200", 10);
+const API_TIMEOUT = parseInt(process.env.API_TIMEOUT_MS || "30000", 10);
 
 let saveTimeout = null;
 let tierData = null;
+let connectionAttempts = 0;
+const MAX_RECONNECT_ATTEMPTS = 5;
 
 /* =========================================
    CONFIG
 ========================================= */
 
-// Numeric ranks 1..50 (no letters) as requested
+// Numeric ranks 1..50
 const TIERS = Array.from({ length: 50 }, (_, i) => String(i + 1));
 const TIER_SET = new Set(TIERS);
 
+// 9 Kits with aliases for flexible input
 const KITS = [
-  { id: "sword", name: "⚔️ Sword" },
-  { id: "axe", name: "🪓 Axe" },
-  { id: "crystal", name: "💎 Crystal" },
-  { id: "pot", name: "🧪 Pot" },
-  { id: "smp", name: "🥊 SMP" },
-  { id: "dia-smp", name: "💠 Dia SMP" },
-  { id: "uhc", name: "❤️ UHC" },
-  { id: "mace", name: "🔨 Mace" },
-  { id: "spear-mace", name: "🔱⚒️ Spear Mace" },
-  // 10th kit added per request
-  { id: "bow", name: "🏹 Bow" }
+  { id: "sword", name: "⚔️ Sword", aliases: ["sword"] },
+  { id: "axe", name: "🪓 Axe", aliases: ["axe"] },
+  { id: "crystal", name: "💎 Crystal", aliases: ["crystal"] },
+  { id: "pot", name: "🧪 Pot", aliases: ["pot"] },
+  { id: "smp", name: "🥊 SMP", aliases: ["smp"] },
+  { id: "dia-smp", name: "💠 Dia SMP", aliases: ["dia-smp", "diasmp", "dia"] },
+  { id: "uhc", name: "❤️ UHC", aliases: ["uhc", "uch"] },
+  { id: "mace", name: "🔨 Mace", aliases: ["mace"] },
+  { id: "spear-mace", name: "🔱⚒️ Spear Mace", aliases: ["spear-mace", "sprearmace", "spear"] },
+  { id: "nethsmp", name: "🌍 Neth SMP", aliases: ["nethsmp", "neth"] }
 ];
 
 const KIT_IDS = new Set(KITS.map(k => k.id));
+
+// Build alias map for quick lookup
+const KIT_ALIAS_MAP = {};
+KITS.forEach(kit => {
+  kit.aliases.forEach(alias => {
+    KIT_ALIAS_MAP[alias.toLowerCase()] = kit.id;
+  });
+});
 
 const RESTRICT_COMMANDS = process.env.RESTRICT_TIER_COMMANDS === "true";
 const ADMIN_ROLE_ID = process.env.ADMIN_ROLE_ID || "";
@@ -60,11 +74,23 @@ const ADMIN_USER_IDS = (process.env.ADMIN_USER_IDS || "").split(",").map(s => s.
    UTILITIES: persistence, validation, logging
 ========================================= */
 
+function log(level, message, meta = {}) {
+  const timestamp = new Date().toISOString();
+  const env = RAILWAY_ENVIRONMENT;
+  console.log(JSON.stringify({ timestamp, level, env, message, ...meta }));
+}
+
 function safeNormalizePlayer(name) {
   if (typeof name !== "string") return null;
   const trimmed = name.trim();
   if (!/^[A-Za-z0-9_]{2,16}$/.test(trimmed)) return null;
   return trimmed;
+}
+
+function normalizeKit(kitInput) {
+  if (typeof kitInput !== "string") return null;
+  const lower = kitInput.toLowerCase().trim();
+  return KIT_ALIAS_MAP[lower] || null;
 }
 
 async function loadData() {
@@ -74,34 +100,34 @@ async function loadData() {
       const parsed = JSON.parse(raw);
       if (typeof parsed === "object" && parsed !== null) {
         tierData = parsed;
-        console.info("Loaded tier data from disk.");
+        log("info", "Loaded tier data from disk", { file: DATA_FILE });
+        connectionAttempts = 0;
         return;
       }
     } catch (parseErr) {
-      console.warn("tiers.json exists but is invalid JSON — backing up and starting fresh:", parseErr);
+      log("warn", "tiers.json is invalid JSON", { error: parseErr.message });
       try {
         const corruptPath = DATA_FILE + `.corrupt.${Date.now()}`;
         await fs.rename(DATA_FILE, corruptPath);
-        console.warn("Backed up corrupt tiers.json to", corruptPath);
+        log("warn", "Backed up corrupt file", { from: DATA_FILE, to: corruptPath });
       } catch (renameErr) {
-        console.warn("Failed to backup corrupt tiers.json:", renameErr);
+        log("warn", "Failed to backup corrupt file", { error: renameErr.message });
       }
     }
   } catch (err) {
     if (err.code !== "ENOENT") {
-      console.warn("Error loading tiers.json:", err);
+      log("warn", "Error loading tiers.json", { error: err.message });
     } else {
-      console.info("tiers.json not found — starting with default data.");
+      log("info", "tiers.json not found — starting with default data");
     }
   }
 
-  // default structure
+  // Initialize default structure
   tierData = {};
   for (const k of KIT_IDS) {
     tierData[k] = tierData[k] || {};
   }
-  // keep a sample entry if missing
-  tierData["spear-mace"] = tierData["spear-mace"] || { Yunglah: "50" };
+  tierData["spear-mace"] = tierData["spear-mace"] || { Yunglah: 50 };
   await saveData();
 }
 
@@ -112,9 +138,9 @@ async function saveData() {
       const tmp = DATA_FILE + ".tmp";
       await fs.writeFile(tmp, JSON.stringify(tierData, null, 2), "utf8");
       await fs.rename(tmp, DATA_FILE);
-      console.info("Saved tier data to disk.");
+      log("info", "Saved tier data to disk", { file: DATA_FILE });
     } catch (err) {
-      console.error("Failed to save tiers.json:", err);
+      log("error", "Failed to save tiers.json", { error: err.message, file: DATA_FILE });
     }
   }, SAVE_DEBOUNCE_MS);
 }
@@ -125,66 +151,142 @@ async function saveData() {
 
 app.use(helmet());
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: "10mb" }));
+app.use(express.urlencoded({ limit: "10mb", extended: true }));
 app.use(morgan("tiny"));
+
+// Request timeout middleware
+app.use((req, res, next) => {
+  res.setTimeout(API_TIMEOUT, () => {
+    log("warn", "Request timeout", { method: req.method, path: req.path });
+    res.status(408).json({ error: "request_timeout" });
+  });
+  next();
+});
 
 const limiter = rateLimit({
   windowMs: 30 * 1000,
-  max: 60,
+  max: 100,
   standardHeaders: true,
-  legacyHeaders: false
+  legacyHeaders: false,
+  message: "Too many requests, please try again later.",
+  skip: (req) => req.path === "/health" // Don't rate limit health checks
 });
 app.use("/api/", limiter);
 
+// Error logging middleware
+app.use((err, req, res, next) => {
+  if (err instanceof SyntaxError && err.status === 400 && "body" in err) {
+    return res.status(400).json({ error: "invalid_json_payload" });
+  }
+  next();
+});
+
 /* =========================================
-   API
+   API ENDPOINTS
 ========================================= */
 
+// Root status
 app.get("/", (req, res) => {
-  res.json({ status: "online", bot: "HAVOC STYX", api: "online" });
+  res.json({
+    status: "online",
+    bot: "HAVOC STYX",
+    api: "v2",
+    environment: RAILWAY_ENVIRONMENT,
+    timestamp: new Date().toISOString()
+  });
 });
 
-// Return kits, tiers and current data. Include computed point mapping info.
-app.get("/api/tiers", (req, res) => {
+// Health check (used by Railway)
+app.get("/health", (req, res) => {
+  const health = {
+    ok: tierData !== null,
+    uptime: process.uptime(),
+    dataLoaded: tierData !== null,
+    environment: RAILWAY_ENVIRONMENT,
+    timestamp: new Date().toISOString()
+  };
+  
   if (!tierData) {
-    return res.status(500).json({ error: "tier data not loaded" });
+    return res.status(503).json(health);
   }
-  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
-  res.setHeader("Pragma", "no-cache");
-  res.setHeader("Expires", "0");
-  const pointsByTier = TIERS.reduce((acc, t) => {
-    acc[t] = computePointsForRank(parseInt(t, 10));
-    return acc;
-  }, {});
-  res.json({ kits: KITS, tiers: TIERS, pointsByTier, data: tierData });
+  res.json(health);
 });
 
-app.get("/api/ping", (req, res) => res.json({ ok: true, ts: Date.now() }));
+// Return kits, tiers and current data
+app.get("/api/tiers", (req, res) => {
+  try {
+    if (!tierData) {
+      log("warn", "API: tier data not loaded");
+      return res.status(503).json({ error: "tier_data_not_loaded" });
+    }
+    res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+    const pointsByTier = TIERS.reduce((acc, t) => {
+      acc[t] = computePointsForRank(parseInt(t, 10));
+      return acc;
+    }, {});
+    res.json({
+      kits: KITS.map(k => ({ id: k.id, name: k.name, aliases: k.aliases })),
+      tiers: TIERS,
+      pointsByTier,
+      data: tierData,
+      timestamp: new Date().toISOString()
+    });
+  } catch (err) {
+    log("error", "Error in /api/tiers", { error: err.message });
+    res.status(500).json({ error: "internal_server_error" });
+  }
+});
 
-// Leaderboard for a specific kit — returns players sorted by rank (1 best)
+app.get("/api/ping", (req, res) => {
+  res.json({ ok: true, timestamp: Date.now() });
+});
+
+// Leaderboard for a specific kit with alias support
 app.get("/api/kit/:kit/leaderboard", (req, res) => {
-  const kit = req.params.kit;
-  if (!KIT_IDS.has(kit)) return res.status(404).json({ error: "unknown_kit" });
-  const map = tierData && tierData[kit] ? tierData[kit] : {};
-  const rows = Object.keys(map).map(player => {
-    const stored = map[player];
-    const rank = normalizeStoredRank(stored); // integer or null
-    const points = rank ? computePointsForRank(rank) : 0;
-    return { player, rank, points, tier: stored };
-  });
-  rows.sort((a, b) => {
-    // sort by points desc, then player name
-    if (b.points !== a.points) return b.points - a.points;
-    return a.player.localeCompare(b.player);
-  });
-  res.json({ kit, rows, count: rows.length });
+  try {
+    const kit = req.params.kit;
+    const normalizedKit = normalizeKit(kit);
+    
+    if (!normalizedKit) {
+      return res.status(404).json({ error: "unknown_kit", provided: kit, availableAliases: Object.keys(KIT_ALIAS_MAP) });
+    }
+
+    const map = tierData && tierData[normalizedKit] ? tierData[normalizedKit] : {};
+    const rows = Object.keys(map).map(player => {
+      const stored = map[player];
+      const rank = normalizeStoredRank(stored);
+      const points = rank ? computePointsForRank(rank) : 0;
+      return { player, rank, points };
+    });
+
+    rows.sort((a, b) => {
+      if (b.points !== a.points) return b.points - a.points;
+      return a.player.localeCompare(b.player);
+    });
+
+    res.json({
+      kit: normalizedKit,
+      count: rows.length,
+      rows,
+      timestamp: new Date().toISOString()
+    });
+  } catch (err) {
+    log("error", "Error in /api/kit/:kit/leaderboard", { error: err.message, kit: req.params.kit });
+    res.status(500).json({ error: "internal_server_error" });
+  }
 });
 
-// Basic JSON error handler for API
+// Global error handler for express
 app.use((err, req, res, next) => {
-  console.error("Unhandled express error:", err);
+  log("error", "Unhandled express error", { error: err.message, stack: err.stack });
   if (res.headersSent) return next(err);
-  res.status(500).json({ error: "internal_server_error" });
+  res.status(500).json({ error: "internal_server_error", message: process.env.NODE_ENV === "development" ? err.message : undefined });
+});
+
+// 404 handler
+app.use((req, res) => {
+  res.status(404).json({ error: "endpoint_not_found", path: req.path });
 });
 
 /* =========================================
@@ -193,23 +295,22 @@ app.use((err, req, res, next) => {
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
-// Build slash command: use an integer option for tier (1-50) because Discord has a 25-choice limit
+// Build slash command with proper tier range
 const tierCommand = new SlashCommandBuilder()
   .setName("tier")
   .setDescription("Manage HAVOC STYX player tiers")
   .addSubcommand(sub =>
     sub
       .setName("add")
-      .setDescription("Add a player to a tier")
+      .setDescription("Add a player to a tier (e.g., /tier add player:Yunglah tier:1 kit:sprearmace)")
       .addStringOption(opt => opt.setName("player").setDescription("Minecraft player name").setRequired(true))
       .addStringOption(opt =>
         opt
           .setName("kit")
-          .setDescription("Kit")
+          .setDescription("Kit (mace, sprearmace, diasmp, nethsmp, uch, sword, axe, smp, crystal, pot)")
           .setRequired(true)
           .addChoices(...KITS.map(kit => ({ name: kit.name, value: kit.id })))
       )
-      // use integer option for tier so users provide 1..50
       .addIntegerOption(opt =>
         opt
           .setName("tier")
@@ -227,14 +328,23 @@ const tierCommand = new SlashCommandBuilder()
       .addStringOption(opt =>
         opt.setName("kit").setDescription("Kit").setRequired(true).addChoices(...KITS.map(kit => ({ name: kit.name, value: kit.id })))
       )
+  )
+  .addSubcommand(sub =>
+    sub
+      .setName("get")
+      .setDescription("Get a player's tier in a kit")
+      .addStringOption(opt => opt.setName("player").setDescription("Minecraft player name").setRequired(true))
+      .addStringOption(opt =>
+        opt.setName("kit").setDescription("Kit").setRequired(true).addChoices(...KITS.map(kit => ({ name: kit.name, value: kit.id })))
+      )
   );
 
 /* =========================================
-   REGISTER COMMANDS (global vs guild)
+   REGISTER COMMANDS
 ========================================= */
 
 client.once("ready", async () => {
-  console.info(`Logged in as ${client.user.tag}`);
+  log("info", "Bot logged in", { user: client.user.tag });
 
   const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_TOKEN);
 
@@ -243,20 +353,20 @@ client.once("ready", async () => {
       await rest.put(Routes.applicationGuildCommands(client.user.id, process.env.GUILD_ID), {
         body: [tierCommand.toJSON()]
       });
-      console.info("Registered guild commands.");
+      log("info", "Registered guild commands", { guildId: process.env.GUILD_ID });
     } else {
       await rest.put(Routes.applicationCommands(client.user.id), { body: [tierCommand.toJSON()] });
-      console.info("Registered global commands.");
+      log("info", "Registered global commands");
     }
   } catch (error) {
-    console.error("Slash command registration error:", error);
+    log("error", "Slash command registration failed", { error: error.message });
   }
 
-  console.info("HAVOC STYX bot is online!");
+  log("info", "HAVOC STYX bot is ready");
 });
 
 /* =========================================
-   HELPERS: permission check
+   HELPERS
 ========================================= */
 
 function isAdminInteraction(interaction) {
@@ -275,32 +385,23 @@ function isAdminInteraction(interaction) {
   return false;
 }
 
-/* =========================================
-   RANK/POINT HELPERS
-========================================= */
-
-// Convert stored tier value (could be string or number or legacy like "LT5") into an integer rank 1..50 or null
 function normalizeStoredRank(value) {
-  if (typeof value === 'number' && Number.isFinite(value)) {
+  if (typeof value === "number" && Number.isFinite(value)) {
     if (value >= 1 && value <= 50) return value;
     return null;
   }
-  if (typeof value === 'string') {
-    // If it's purely numeric, parse it
+  if (typeof value === "string") {
     const n = parseInt(value, 10);
     if (Number.isFinite(n) && n >= 1 && n <= 50) return n;
-    // legacy formats (e.g., HT1/LT5) are not auto-mapped — return null so they appear at bottom
     return null;
   }
   return null;
 }
 
-// Simple linear points system: rank 1 -> 50 points, rank 50 -> 1 point
 function computePointsForRank(rank) {
   if (!Number.isFinite(rank)) return 0;
-  if (rank < 1) return 0;
-  if (rank > 50) return 0;
-  return 51 - rank; // 1 -> 50, 50 -> 1
+  if (rank < 1 || rank > 50) return 0;
+  return 51 - rank;
 }
 
 /* =========================================
@@ -315,6 +416,7 @@ client.on("interactionCreate", async interaction => {
     const subcommand = interaction.options.getSubcommand();
 
     if (RESTRICT_COMMANDS && !isAdminInteraction(interaction)) {
+      log("warn", "User attempted restricted command", { userId: interaction.user.id, username: interaction.user.username });
       await interaction.reply({ content: "❌ You don't have permission to modify tiers.", ephemeral: true });
       return;
     }
@@ -336,17 +438,18 @@ client.on("interactionCreate", async interaction => {
       }
 
       if (!Number.isInteger(tierInt) || tierInt < 1 || tierInt > 50) {
-        await interaction.reply({ content: "❌ Invalid rank. Must be an integer between 1 and 50.", ephemeral: true });
+        await interaction.reply({ content: "❌ Invalid rank. Must be 1-50.", ephemeral: true });
         return;
       }
 
       tierData[kit] = tierData[kit] || {};
-      tierData[kit][player] = tierInt; // store as number
+      tierData[kit][player] = tierInt;
       await saveData();
 
-      console.info(`[TIER ADD] ${player} → ${kit} → ${tierInt}`);
+      log("info", "Tier added", { player, kit, tier: tierInt, userId: interaction.user.id });
+      const kitName = KITS.find(k => k.id === kit)?.name || kit;
       await interaction.reply({
-        content: `✅ **${player}** is now **#${tierInt}** in **${KITS.find(k => k.id === kit)?.name || kit}**.\n\n🌐 The website will update automatically.`
+        content: `✅ **${player}** is now **#${tierInt}** in **${kitName}**.\n🌐 View: \`/tier get player:${player} kit:${kit}\``
       });
       return;
     }
@@ -374,20 +477,63 @@ client.on("interactionCreate", async interaction => {
       delete tierData[kit][player];
       await saveData();
 
-      console.info(`[TIER REMOVE] ${player} ← ${kit}`);
-      await interaction.reply({ content: `✅ Removed **${player}** from **${KITS.find(k => k.id === kit)?.name || kit}**.` });
+      log("info", "Tier removed", { player, kit, userId: interaction.user.id });
+      const kitName = KITS.find(k => k.id === kit)?.name || kit;
+      await interaction.reply({ content: `✅ Removed **${player}** from **${kitName}**.` });
+      return;
+    }
+
+    if (subcommand === "get") {
+      const rawPlayer = interaction.options.getString("player", true);
+      const kit = interaction.options.getString("kit", true);
+
+      const player = safeNormalizePlayer(rawPlayer);
+      if (!player) {
+        await interaction.reply({ content: "❌ Invalid player name.", ephemeral: true });
+        return;
+      }
+
+      if (!KIT_IDS.has(kit)) {
+        await interaction.reply({ content: "❌ Invalid kit.", ephemeral: true });
+        return;
+      }
+
+      const rank = tierData[kit]?.[player];
+      if (rank === undefined) {
+        await interaction.reply({ content: `❌ **${player}** is not ranked in that kit.`, ephemeral: true });
+        return;
+      }
+
+      const points = computePointsForRank(rank);
+      const kitName = KITS.find(k => k.id === kit)?.name || kit;
+      await interaction.reply({
+        content: `📊 **${player}** in **${kitName}**: **#${rank}** (${points} pts)`
+      });
       return;
     }
   } catch (err) {
-    console.error("Error handling interaction:", err);
+    log("error", "Error handling interaction", { error: err.message, user: interaction.user.id });
     if (!interaction.replied && !interaction.deferred) {
       try {
-        await interaction.reply({ content: "❌ An unexpected error occurred.", ephemeral: true });
+        await interaction.reply({ content: "❌ An unexpected error occurred. Check logs.", ephemeral: true });
       } catch (e) {
-        // ignore
+        log("error", "Failed to reply to interaction", { error: e.message });
       }
     }
   }
+});
+
+// Handle Discord client errors
+client.on("error", err => {
+  log("error", "Discord client error", { error: err.message });
+});
+
+client.on("warn", info => {
+  log("warn", "Discord client warning", { info });
+});
+
+client.on("disconnect", () => {
+  log("warn", "Discord client disconnected");
 });
 
 /* =========================================
@@ -398,28 +544,33 @@ client.on("interactionCreate", async interaction => {
   try {
     await loadData();
   } catch (err) {
-    console.error("Failed to initialize data:", err);
+    log("error", "Failed to initialize data", { error: err.message });
     process.exit(1);
   }
 
   const server = app.listen(PORT, "0.0.0.0", () => {
-    console.info(`🌐 HAVOC STYX API running on port ${PORT}`);
+    log("info", "HAVOC STYX API listening", { port: PORT, environment: RAILWAY_ENVIRONMENT });
+  });
+
+  server.on("error", (err) => {
+    log("error", "Server error", { error: err.message });
   });
 
   const shutdown = async () => {
-    console.info("Shutdown requested — saving data & closing...");
+    log("info", "Shutdown initiated");
     if (saveTimeout) clearTimeout(saveTimeout);
     try {
       await fs.writeFile(DATA_FILE, JSON.stringify(tierData, null, 2), "utf8");
+      log("info", "Final save complete");
     } catch (err) {
-      console.error("Error saving data during shutdown:", err);
+      log("error", "Error saving data during shutdown", { error: err.message });
     }
     server.close(() => {
-      console.info("HTTP server closed.");
+      log("info", "HTTP server closed");
       process.exit(0);
     });
     setTimeout(() => {
-      console.info("Forcing exit.");
+      log("warn", "Forcing exit after timeout");
       process.exit(1);
     }, 5000).unref();
   };
@@ -427,21 +578,26 @@ client.on("interactionCreate", async interaction => {
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
 
-  process.on('unhandledRejection', (reason) => {
-    console.error('Unhandled Rejection:', reason);
+  process.on("unhandledRejection", reason => {
+    log("error", "Unhandled rejection", { reason: String(reason) });
   });
-  process.on('uncaughtException', (err) => {
-    console.error('Uncaught Exception:', err);
+
+  process.on("uncaughtException", err => {
+    log("error", "Uncaught exception", { error: err.message });
   });
 
   if (!process.env.DISCORD_TOKEN) {
-    console.error("❌ DISCORD_TOKEN environment variable is missing!");
-    // Do not exit — API can still run without Discord
+    log("warn", "DISCORD_TOKEN not set — Discord features disabled");
   } else {
     try {
       await client.login(process.env.DISCORD_TOKEN);
     } catch (err) {
-      console.error("Discord login failed:", err);
+      log("error", "Discord login failed", { error: err.message });
+      connectionAttempts++;
+      if (connectionAttempts < MAX_RECONNECT_ATTEMPTS) {
+        log("info", "Retrying Discord connection...", { attempt: connectionAttempts });
+        setTimeout(() => client.login(process.env.DISCORD_TOKEN), 5000);
+      }
     }
   }
 })();
