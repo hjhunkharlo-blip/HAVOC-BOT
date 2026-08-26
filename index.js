@@ -1,5 +1,4 @@
 const express = require("express");
-const cors = require("cors");
 const {
   Client,
   GatewayIntentBits,
@@ -11,25 +10,33 @@ const {
 const app = express();
 const PORT = process.env.PORT || 8080;
 
-/* =====================================================
-   CORS
-===================================================== */
+/* =========================================
+   CORS FIX
+========================================= */
 
-app.use(cors({
-  origin: [
-    "https://hjhunkharlo-blip.github.io"
-  ],
-  methods: ["GET", "POST", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization"]
-}));
+app.use((req, res, next) => {
+  res.header("Access-Control-Allow-Origin", "*");
+  res.header(
+    "Access-Control-Allow-Methods",
+    "GET,POST,PUT,DELETE,OPTIONS"
+  );
+  res.header(
+    "Access-Control-Allow-Headers",
+    "Origin, X-Requested-With, Content-Type, Accept, Authorization"
+  );
 
-app.options("*", cors());
+  if (req.method === "OPTIONS") {
+    return res.sendStatus(204);
+  }
+
+  next();
+});
 
 app.use(express.json());
 
-/* =====================================================
-   TIER DATA
-===================================================== */
+/* =========================================
+   TIERS
+========================================= */
 
 const TIERS = [
   "HT1",
@@ -44,9 +51,9 @@ const TIERS = [
   "LT5"
 ];
 
-/*
- * EXACT 9 KITS
- */
+/* =========================================
+   EXACT 9 KITS
+========================================= */
 
 const KITS = [
   {
@@ -87,9 +94,12 @@ const KITS = [
   }
 ];
 
-/* =====================================================
-   DATA
-===================================================== */
+/* =========================================
+   TIER DATA
+
+   Yunglah is included so it remains visible
+   immediately after a Railway restart.
+========================================= */
 
 const tierData = {
   sword: {},
@@ -100,12 +110,15 @@ const tierData = {
   "dia-smp": {},
   uhc: {},
   mace: {},
-  "spear-mace": {}
+
+  "spear-mace": {
+    Yunglah: "LT5"
+  }
 };
 
-/* =====================================================
-   API
-===================================================== */
+/* =========================================
+   API HOME
+========================================= */
 
 app.get("/", (req, res) => {
   res.json({
@@ -115,6 +128,9 @@ app.get("/", (req, res) => {
   });
 });
 
+/* =========================================
+   TIER API
+========================================= */
 
 app.get("/api/tiers", (req, res) => {
 
@@ -123,15 +139,8 @@ app.get("/api/tiers", (req, res) => {
     "no-store, no-cache, must-revalidate, proxy-revalidate"
   );
 
-  res.setHeader(
-    "Pragma",
-    "no-cache"
-  );
-
-  res.setHeader(
-    "Expires",
-    "0"
-  );
+  res.setHeader("Pragma", "no-cache");
+  res.setHeader("Expires", "0");
 
   res.json({
     kits: KITS,
@@ -141,10 +150,9 @@ app.get("/api/tiers", (req, res) => {
 
 });
 
-
-/* =====================================================
+/* =========================================
    DISCORD CLIENT
-===================================================== */
+========================================= */
 
 const client = new Client({
   intents: [
@@ -152,15 +160,18 @@ const client = new Client({
   ]
 });
 
+/* =========================================
+   /tier COMMAND
+========================================= */
 
-/* =====================================================
-   SLASH COMMANDS
-===================================================== */
-
-const tierAddCommand =
+const tierCommand =
   new SlashCommandBuilder()
     .setName("tier")
-    .setDescription("Manage HAVOC STYX tiers")
+    .setDescription("Manage HAVOC STYX player tiers")
+
+    /* -------------------------------------
+       /tier add
+    ------------------------------------- */
 
     .addSubcommand(
       sub =>
@@ -183,12 +194,10 @@ const tierAddCommand =
                 .setDescription("Kit")
                 .setRequired(true)
                 .addChoices(
-                  ...KITS.map(
-                    kit => ({
-                      name: kit.name,
-                      value: kit.id
-                    })
-                  )
+                  ...KITS.map(kit => ({
+                    name: kit.name,
+                    value: kit.id
+                  }))
                 )
           )
 
@@ -199,21 +208,23 @@ const tierAddCommand =
                 .setDescription("Tier")
                 .setRequired(true)
                 .addChoices(
-                  ...TIERS.map(
-                    tier => ({
-                      name: tier,
-                      value: tier
-                    })
-                  )
+                  ...TIERS.map(tier => ({
+                    name: tier,
+                    value: tier
+                  }))
                 )
           )
     )
+
+    /* -------------------------------------
+       /tier remove
+    ------------------------------------- */
 
     .addSubcommand(
       sub =>
         sub
           .setName("remove")
-          .setDescription("Remove a player from a tier")
+          .setDescription("Remove a player from a kit")
 
           .addStringOption(
             option =>
@@ -230,76 +241,66 @@ const tierAddCommand =
                 .setDescription("Kit")
                 .setRequired(true)
                 .addChoices(
-                  ...KITS.map(
-                    kit => ({
-                      name: kit.name,
-                      value: kit.id
-                    })
-                  )
+                  ...KITS.map(kit => ({
+                    name: kit.name,
+                    value: kit.id
+                  }))
                 )
           )
     );
 
-
-/* =====================================================
+/* =========================================
    BOT READY
-===================================================== */
+========================================= */
 
-client.once(
-  "ready",
-  async () => {
+client.once("ready", async () => {
 
-    console.log(
-      `Logged in as ${client.user.tag}`
+  console.log(
+    `Logged in as ${client.user.tag}`
+  );
+
+  try {
+
+    const rest =
+      new REST({
+        version: "10"
+      }).setToken(
+        process.env.DISCORD_TOKEN
+      );
+
+    await rest.put(
+      Routes.applicationCommands(
+        client.user.id
+      ),
+      {
+        body: [
+          tierCommand.toJSON()
+        ]
+      }
     );
 
-    try {
-
-      const rest =
-        new REST({
-          version: "10"
-        })
-        .setToken(
-          process.env.DISCORD_TOKEN
-        );
-
-
-      await rest.put(
-        Routes.applicationCommands(
-          client.user.id
-        ),
-        {
-          body: [
-            tierAddCommand.toJSON()
-          ]
-        }
-      );
-
-
-      console.log(
-        "Slash commands registered!"
-      );
-
-    } catch (error) {
-
-      console.error(
-        "Slash command registration error:",
-        error
-      );
-
-    }
-
     console.log(
-      "HAVOC STYX bot is online!"
+      "Slash commands registered!"
+    );
+
+  } catch (error) {
+
+    console.error(
+      "Slash command registration error:",
+      error
     );
 
   }
-);
 
+  console.log(
+    "HAVOC STYX bot is online!"
+  );
 
-/* =====================================================
-   COMMAND HANDLER
-===================================================== */
+});
+
+/* =========================================
+   DISCORD COMMAND HANDLER
+========================================= */
 
 client.on(
   "interactionCreate",
@@ -311,21 +312,18 @@ client.on(
       return;
     }
 
-
     if (
       interaction.commandName !== "tier"
     ) {
       return;
     }
 
-
     const subcommand =
       interaction.options.getSubcommand();
 
-
-    /* ---------------------------------------------
-       ADD
-    --------------------------------------------- */
+    /* =====================================
+       /tier add
+    ===================================== */
 
     if (
       subcommand === "add"
@@ -349,43 +347,35 @@ client.on(
           true
         );
 
-
       if (
         !tierData[kit]
       ) {
 
         await interaction.reply({
-          content:
-            "❌ Invalid kit.",
+          content: "❌ Invalid kit.",
           ephemeral: true
         });
 
         return;
       }
 
-
-      tierData[kit][player] =
-        tier;
-
+      tierData[kit][player] = tier;
 
       console.log(
-        `Added ${player} → ${kit} → ${tier}`
+        `[TIER ADD] ${player} → ${kit} → ${tier}`
       );
-
 
       await interaction.reply({
         content:
-          `✅ **${player}** is now **${tier}** in **${kit}**.\n\nThe website will update automatically.`,
-        ephemeral: false
+          `✅ **${player}** is now **${tier}** in **${KITS.find(k => k.id === kit)?.name || kit}**.\n\n🌐 The website will update automatically.`
       });
 
       return;
     }
 
-
-    /* ---------------------------------------------
-       REMOVE
-    --------------------------------------------- */
+    /* =====================================
+       /tier remove
+    ===================================== */
 
     if (
       subcommand === "remove"
@@ -403,20 +393,17 @@ client.on(
           true
         );
 
-
       if (
         !tierData[kit]
       ) {
 
         await interaction.reply({
-          content:
-            "❌ Invalid kit.",
+          content: "❌ Invalid kit.",
           ephemeral: true
         });
 
         return;
       }
-
 
       if (
         !tierData[kit][player]
@@ -431,19 +418,15 @@ client.on(
         return;
       }
 
-
       delete tierData[kit][player];
 
-
       console.log(
-        `Removed ${player} from ${kit}`
+        `[TIER REMOVE] ${player} ← ${kit}`
       );
-
 
       await interaction.reply({
         content:
-          `✅ Removed **${player}** from **${kit}**.`,
-        ephemeral: false
+          `✅ Removed **${player}** from **${KITS.find(k => k.id === kit)?.name || kit}**.`
       });
 
     }
@@ -451,10 +434,9 @@ client.on(
   }
 );
 
-
-/* =====================================================
-   START WEB SERVER
-===================================================== */
+/* =========================================
+   START WEB/API SERVER
+========================================= */
 
 app.listen(
   PORT,
@@ -462,23 +444,22 @@ app.listen(
   () => {
 
     console.log(
-      `Website/API running on port ${PORT}`
+      `🌐 HAVOC STYX API running on port ${PORT}`
     );
 
   }
 );
 
-
-/* =====================================================
+/* =========================================
    START DISCORD BOT
-===================================================== */
+========================================= */
 
 if (
   !process.env.DISCORD_TOKEN
 ) {
 
   console.error(
-    "❌ DISCORD_TOKEN environment variable is missing."
+    "❌ DISCORD_TOKEN environment variable is missing!"
   );
 
 } else {
@@ -487,4 +468,4 @@ if (
     process.env.DISCORD_TOKEN
   );
 
-                             }
+        }
