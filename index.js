@@ -66,11 +66,22 @@ function safeNormalizePlayer(name) {
 async function loadData() {
   try {
     const raw = await fs.readFile(DATA_FILE, "utf8");
-    const parsed = JSON.parse(raw);
-    if (typeof parsed === "object" && parsed !== null) {
-      tierData = parsed;
-      console.info("Loaded tier data from disk.");
-      return;
+    try {
+      const parsed = JSON.parse(raw);
+      if (typeof parsed === "object" && parsed !== null) {
+        tierData = parsed;
+        console.info("Loaded tier data from disk.");
+        return;
+      }
+    } catch (parseErr) {
+      console.warn("tiers.json exists but is invalid JSON — backing up and starting fresh:", parseErr);
+      try {
+        const corruptPath = DATA_FILE + `.corrupt.${Date.now()}`;
+        await fs.rename(DATA_FILE, corruptPath);
+        console.warn("Backed up corrupt tiers.json to", corruptPath);
+      } catch (renameErr) {
+        console.warn("Failed to backup corrupt tiers.json:", renameErr);
+      }
     }
   } catch (err) {
     if (err.code !== "ENOENT") {
@@ -80,10 +91,12 @@ async function loadData() {
     }
   }
 
+  // default structure
   tierData = {};
   for (const k of KIT_IDS) {
     tierData[k] = tierData[k] || {};
   }
+  // keep the sample entry if missing
   tierData["spear-mace"] = tierData["spear-mace"] || { Yunglah: "LT5" };
   await saveData();
 }
@@ -128,10 +141,23 @@ app.get("/", (req, res) => {
 });
 
 app.get("/api/tiers", (req, res) => {
+  if (!tierData) {
+    return res.status(500).json({ error: "tier data not loaded" });
+  }
   res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
   res.setHeader("Pragma", "no-cache");
   res.setHeader("Expires", "0");
-  res.json({ kits: KITS, tiers: TIERS, data: tierData });
+  // Return both names for compatibility with different frontends
+  res.json({ kits: KITS, tiers: TIERS, data: tierData, tierData: tierData });
+});
+
+app.get("/api/ping", (req, res) => res.json({ ok: true, ts: Date.now() }));
+
+// Basic JSON error handler for API
+app.use((err, req, res, next) => {
+  console.error("Unhandled express error:", err);
+  if (res.headersSent) return next(err);
+  res.status(500).json({ error: "internal_server_error" });
 });
 
 /* =========================================
@@ -343,15 +369,21 @@ client.on("interactionCreate", async interaction => {
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
 
+  process.on('unhandledRejection', (reason) => {
+    console.error('Unhandled Rejection:', reason);
+  });
+  process.on('uncaughtException', (err) => {
+    console.error('Uncaught Exception:', err);
+  });
+
   if (!process.env.DISCORD_TOKEN) {
     console.error("❌ DISCORD_TOKEN environment variable is missing!");
-    return;
-  }
-
-  try {
-    await client.login(process.env.DISCORD_TOKEN);
-  } catch (err) {
-    console.error("Discord login failed:", err);
-    process.exit(1);
+    // Do not exit — API can still run without Discord
+  } else {
+    try {
+      await client.login(process.env.DISCORD_TOKEN);
+    } catch (err) {
+      console.error("Discord login failed:", err);
+    }
   }
 })();
